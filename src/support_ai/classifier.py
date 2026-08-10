@@ -39,7 +39,12 @@ def _get_model() -> tuple[TfidfVectorizer, LogisticRegression]:
 
 
 def predict(text: str) -> Classification:
-    """Тема, калиброванная confidence и top-3. UNKNOWN при confidence < CONF_THRESHOLD."""
+    """Тема, confidence и top-3. UNKNOWN при confidence < CONF_THRESHOLD.
+
+    confidence — максимальная predict_proba как proxy уверенности. Это не
+    калиброванная вероятность: отдельной процедуры калибровки нет, и заявлять
+    калибровку было бы технически неверно.
+    """
     vectorizer, estimator = _get_model()
     probabilities = estimator.predict_proba(vectorizer.transform([text]))[0]
     ranked = sorted(
