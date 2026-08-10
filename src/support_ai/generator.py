@@ -1,14 +1,14 @@
 """Генерация черновика ответа. Владелец: Agent B, блок 2.
 
-Заглушка ничего не генерирует: pipeline обязан отработать это как деградацию.
+Принимает только SanitizedTicket: доступа к исходному тексту тикета здесь нет.
+Заглушка ничего не генерирует — pipeline обязан отработать это как деградацию.
 """
 
-from .contracts import Draft, LLM, PolicyDecision, RedactedText, RetrievalResult, Ticket
+from .contracts import Draft, LLM, PolicyDecision, RetrievalResult, SanitizedTicket
 
 
 def make_draft(
-    ticket: Ticket,
-    redacted: RedactedText,
+    ticket: SanitizedTicket,
     retrieval: RetrievalResult,
     policy: PolicyDecision,
     llm: LLM,

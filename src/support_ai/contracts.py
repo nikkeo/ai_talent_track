@@ -1,4 +1,7 @@
-"""Единственная точка связи между модулями. Менять только через Lead."""
+"""Единственная точка связи между модулями. Менять только через Lead.
+
+ЗАМОРОЖЕН окончательно: дальнейшие правки — только если они убирают поле или тип.
+"""
 
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
@@ -10,23 +13,32 @@ RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 # как AUTO_CANDIDATE + релевантный источник + auto_allowed + validation.ok + записанный audit.
 PolicyRoute = Literal["ESCALATE", "DRAFT_ONLY", "AUTO_CANDIDATE"]
 
-# Урезанная модель состояний: только то, что PoC реально наблюдает.
-# Полная машина состояний асинхронного контура — в docs/architecture.md.
-ProcessingStatus = Literal["RECEIVED", "ROUTED", "NEEDS_HUMAN", "COMPLETED", "FAILED"]
+# Два контура — два непересекающихся набора состояний. Полная целевая модель
+# (QUEUED_FOR_FULFILLMENT, FULFILLING, PENDING_DELIVERY, FAILED_RETRYABLE, ...)
+# описывается в docs/architecture.md вместе с переходами и их владельцами.
+RoutingStatus = Literal["ROUTED", "NEEDS_HUMAN", "FAILED"]
+FulfillmentStatus = Literal["COMPLETED", "NEEDS_HUMAN", "FAILED"]
+
+# PoC пишет только два типа событий. DELIVERY_COMPLETED / DELIVERY_FAILED
+# появляются вместе с dispatcher-ом и описаны в architecture.md.
+AuditEventType = Literal["ROUTING_DECIDED", "FULFILLMENT_COMPLETED"]
+
+AUDIT_SCHEMA_VERSION = "1.0"
 
 
 @dataclass
 class Ticket:
+    """Исходное обращение. Живёт только внутри ingress и routing."""
     ticket_id: str
     customer_ref: str
     channel: Literal["chat", "email", "web", "mobile"]
     language: str
     text: str
     created_at: str
+    # channel + external_ticket_id + event_version. Обязательное поле:
+    # пустой ключ отключил бы дедупликацию или склеил разные тикеты.
+    idempotency_key: str
     metadata: dict = field(default_factory=dict)
-    # channel + external_ticket_id + event_version; повторная доставка не должна
-    # запускать LLM, писать второе решение и отправлять ответ дважды
-    idempotency_key: str = ""
 
 
 @dataclass
@@ -34,6 +46,22 @@ class RedactedText:
     text: str                      # текст с масками <CARD_1>, <PHONE_1>, ...
     found_types: list[str]         # ["CARD", "PHONE"]
     placeholders: int = 0
+
+
+@dataclass
+class SanitizedTicket:
+    """Единственная форма тикета, которой разрешено пересекать границу очереди.
+
+    Исходный Ticket за redaction не проходит: так путь «случайно отправить
+    ticket.text в LLM» закрыт типом, а не дисциплиной.
+    """
+    ticket_id: str
+    idempotency_key: str
+    channel: str
+    language: str
+    redacted_text: str
+    found_pii_types: list[str] = field(default_factory=list)
+    safe_metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -70,11 +98,12 @@ class Hit:
     title: str
     snippet: str
     score: float
-    # KB governance: решение об автоответе принимает validator, retrieval только отдаёт метаданные
-    auto_allowed: bool
+    # KB governance: решение об автоответе принимает validator, retrieval только отдаёт метаданные.
+    # Умолчания fail-closed: документ без явного статуса не считается опубликованным.
+    auto_allowed: bool = False
+    approval_status: Literal["draft", "review", "published"] = "draft"
     owner: str | None = None
     expires_at: str | None = None
-    approval_status: str = "published"   # published | draft | review
     # диагностика каскадных ошибок: совпала ли тема документа с предсказанной
     doc_topics: list[str] = field(default_factory=list)
     topic_match: bool = False
@@ -106,9 +135,20 @@ class Validation:
 
 
 @dataclass
+class RoutingDecision:
+    """Итог синхронного контура. Финального действия здесь ещё нет и быть не может."""
+    status: RoutingStatus
+    route: PolicyRoute
+    target_queue: str
+    reason: str
+    sync_route_ms: float
+
+
+@dataclass
 class Decision:
+    """Итог асинхронного контура."""
     final_action: Action
-    status: ProcessingStatus
+    status: FulfillmentStatus
     target_queue: str
     reason: str
     answer_text: str | None
@@ -118,8 +158,13 @@ class Decision:
 
 @dataclass
 class AuditEvent:
-    request_id: str
+    event_type: AuditEventType
+    schema_version: str
+    sequence: int              # порядковый номер события в рамках correlation_id
+    correlation_id: str        # весь жизненный цикл тикета
+    attempt_id: str            # конкретная попытка обработки
     ticket_id: str
+    idempotency_key: str
     ts: str
     versions: dict
     classification: dict | None
@@ -133,10 +178,10 @@ class AuditEvent:
 
 @dataclass
 class RoutingOutcome:
-    """Результат синхронного контура. Всё, что нужно асинхронной части, — здесь."""
-    decision: Decision
+    """Всё, что синхронный контур передаёт асинхронному. Raw Ticket сюда не входит."""
+    routing: RoutingDecision
     audit: AuditEvent
-    redacted: RedactedText
+    sanitized: SanitizedTicket
     classification: Classification
     policy: PolicyDecision
 

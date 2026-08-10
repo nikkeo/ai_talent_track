@@ -2,6 +2,7 @@
 
 Синхронный контур заканчивается после policy — это архитектурная граница,
 а не деталь реализации: бюджет <500 мс измеряется на route() отдельно.
+Исходный Ticket не покидает route(): дальше идёт только SanitizedTicket.
 """
 
 from .contracts import AuditEvent, Decision, RoutingOutcome, Ticket
@@ -10,13 +11,13 @@ from .contracts import AuditEvent, Decision, RoutingOutcome, Ticket
 def route(ticket: Ticket, *, faults: frozenset[str] = frozenset()) -> RoutingOutcome:
     """СИНХРОННО: normalize -> redact -> classify -> policy -> persist audit -> маршрут.
 
-    Не вызывает ни retrieval, ни LLM. Бюджет <500 мс, замеряется в latency_ms["sync_route_ms"].
+    Не вызывает ни retrieval, ни LLM. Пишет audit-событие ROUTING_DECIDED.
+    Бюджет <500 мс, замеряется в RoutingDecision.sync_route_ms.
     """
     raise NotImplementedError("Agent A, блок 2")
 
 
 def fulfill(
-    ticket: Ticket,
     outcome: RoutingOutcome,
     *,
     llm_mode: str = "mock",
@@ -25,6 +26,8 @@ def fulfill(
     """АСИНХРОННО (в PoC — inline): retrieval -> draft -> validate -> persist audit -> действие.
 
     Вызывается только при outcome.policy.route in {DRAFT_ONLY, AUTO_CANDIDATE}.
+    Работает с outcome.sanitized; доступа к исходному тексту здесь нет.
+    Пишет audit-событие FULFILLMENT_COMPLETED с sequence = 2.
     """
     raise NotImplementedError("Agent A, блок 2")
 
