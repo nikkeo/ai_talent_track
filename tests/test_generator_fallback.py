@@ -1,4 +1,4 @@
-from src.support_ai.contracts import (
+from support_ai.contracts import (
     Draft,
     Hit,
     LLMResult,
@@ -6,9 +6,9 @@ from src.support_ai.contracts import (
     RetrievalResult,
     SanitizedTicket,
 )
-from src.support_ai.generator import make_draft
-from src.support_ai.llm import FailingLLM, MockLLM
-from src.support_ai.validator import validate
+from support_ai.generator import make_draft
+from support_ai.llm import FailingLLM, MockLLM
+from support_ai.validator import validate
 
 
 def _ticket(text: str = "не воспроизводится видео") -> SanitizedTicket:

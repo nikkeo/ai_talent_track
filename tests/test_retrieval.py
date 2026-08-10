@@ -1,5 +1,5 @@
-from src.support_ai import config
-from src.support_ai.retrieval import search
+from support_ai import config
+from support_ai.retrieval import search
 
 
 def test_video_problem_finds_technical_article_first() -> None:

@@ -12,6 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
 from . import config, policy
+from .classifier import train_model
 from .contracts import Classification, PolicyContext, Ticket
 from .pii import redact
 from .retrieval import search
@@ -182,10 +183,8 @@ def main() -> int:
     train_rows = _read_jsonl(config.TRAIN_TICKETS)
     eval_rows = _read_jsonl(config.EVAL_TICKETS)
 
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
-    train_features = vectorizer.fit_transform(row["text"] for row in train_rows)
-    estimator = LogisticRegression(C=10.0, max_iter=1_000, random_state=0)
-    estimator.fit(train_features, [row["label"] for row in train_rows])
+    # Та же функция, что и в runtime: иначе отчёт описывает другую модель.
+    vectorizer, estimator = train_model(train_rows)
 
     probability_rows: list[np.ndarray] = []
     latencies_ms: list[float] = []

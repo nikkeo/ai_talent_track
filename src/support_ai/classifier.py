@@ -14,6 +14,19 @@ _model: tuple[TfidfVectorizer, LogisticRegression] | None = None
 _model_lock = Lock()
 
 
+def train_model(rows: list[dict]) -> tuple[TfidfVectorizer, LogisticRegression]:
+    """Единая точка обучения для runtime и offline-оценки.
+
+    Иначе evaluator меряет одну модель, а в проде работает другая, и выбранный
+    по свипу порог относится не к той модели, к которой применяется.
+    """
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
+    features = vectorizer.fit_transform(row["text"] for row in rows)
+    estimator = LogisticRegression(C=100.0, max_iter=1_000, random_state=0)
+    estimator.fit(features, [row["label"] for row in rows])
+    return vectorizer, estimator
+
+
 def _get_model() -> tuple[TfidfVectorizer, LogisticRegression]:
     global _model
     if _model is not None:
@@ -21,11 +34,7 @@ def _get_model() -> tuple[TfidfVectorizer, LogisticRegression]:
     with _model_lock:
         if _model is None:
             rows = [json.loads(line) for line in config.TRAIN_TICKETS.read_text().splitlines() if line]
-            vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
-            features = vectorizer.fit_transform(row["text"] for row in rows)
-            estimator = LogisticRegression(C=100.0, max_iter=1_000, random_state=0)
-            estimator.fit(features, [row["label"] for row in rows])
-            _model = vectorizer, estimator
+            _model = train_model(rows)
     return _model
 
 
