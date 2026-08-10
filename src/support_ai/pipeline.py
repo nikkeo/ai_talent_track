@@ -159,8 +159,11 @@ def _fulfillment_event(
     draft: Draft | None,
     validation: Validation | None,
     llm_mode: str,
+    llm_usage: dict | None = None,
 ) -> AuditEvent:
     draft_data = asdict(draft) if draft is not None else None
+    if draft_data is not None:
+        draft_data["llm_usage"] = llm_usage
     return AuditEvent(
         event_type="FULFILLMENT_COMPLETED",
         schema_version=AUDIT_SCHEMA_VERSION,
@@ -222,12 +225,13 @@ def fulfill(
         return decision, event
 
     draft: Draft
+    llm_client = llm.get_llm("fail" if "llm" in faults else llm_mode)
     try:
         draft = generator.make_draft(
             outcome.sanitized,
             retrieval_result,
             outcome.policy,
-            llm.get_llm("fail" if "llm" in faults else llm_mode),
+            llm_client,
         )
     except Exception:
         draft = Draft(None, [], "none", False, True, "LLM_UNAVAILABLE")
@@ -256,7 +260,17 @@ def fulfill(
             answer=draft.text, citations=draft.citations,
         )
 
-    event = _fulfillment_event(outcome, decision, retrieval_result, draft, validation, llm_mode)
+    last_result = getattr(llm_client, "last_result", None)
+    llm_usage = None
+    if last_result is not None:
+        llm_usage = {
+            "prompt_tokens": last_result.prompt_tokens,
+            "completion_tokens": last_result.completion_tokens,
+            "latency_ms": last_result.latency_ms,
+        }
+    event = _fulfillment_event(
+        outcome, decision, retrieval_result, draft, validation, llm_mode, llm_usage
+    )
     written = False if "audit" in faults else audit.write(event)
     if not written:
         decision = _decision(outcome, "ESCALATE", "AUDIT_WRITE_FAILED", async_ms)
