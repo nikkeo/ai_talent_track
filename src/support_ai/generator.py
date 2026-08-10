@@ -13,6 +13,6 @@ def make_draft(
     policy: PolicyDecision,
     llm: LLM,
 ) -> Draft:
-    """Режимы template | llm. Без контекста и при запрете policy LLM не вызывается."""
+    """Режимы template | llm. При policy.route == ESCALATE LLM не вызывается вообще."""
     return Draft(text=None, citations=[], mode="none", llm_used=False, degraded=True,
                  reason="NOT_IMPLEMENTED")

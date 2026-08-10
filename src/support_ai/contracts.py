@@ -6,6 +6,14 @@ from typing import Literal, Protocol
 Action = Literal["AUTO_RESPONSE", "DRAFT_FOR_OPERATOR", "ESCALATE"]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 
+# Policy принимает ровно одно решение. AUTO_RESPONSE становится возможен только
+# как AUTO_CANDIDATE + релевантный источник + auto_allowed + validation.ok + записанный audit.
+PolicyRoute = Literal["ESCALATE", "DRAFT_ONLY", "AUTO_CANDIDATE"]
+
+# Урезанная модель состояний: только то, что PoC реально наблюдает.
+# Полная машина состояний асинхронного контура — в docs/architecture.md.
+ProcessingStatus = Literal["RECEIVED", "ROUTED", "NEEDS_HUMAN", "COMPLETED", "FAILED"]
+
 
 @dataclass
 class Ticket:
@@ -16,6 +24,9 @@ class Ticket:
     text: str
     created_at: str
     metadata: dict = field(default_factory=dict)
+    # channel + external_ticket_id + event_version; повторная доставка не должна
+    # запускать LLM, писать второе решение и отправлять ответ дважды
+    idempotency_key: str = ""
 
 
 @dataclass
@@ -34,12 +45,19 @@ class Classification:
 
 
 @dataclass
+class PolicyContext:
+    """Всё, на чём policy имеет право строить решение, кроме самой классификации."""
+    channel: str
+    language: str
+    found_pii_types: list[str] = field(default_factory=list)
+    product: str | None = None
+
+
+@dataclass
 class PolicyDecision:
+    route: PolicyRoute             # единственное решение policy, без противоречивых флагов
     risk_level: RiskLevel
     risk_type: str | None          # FINANCIAL | SECURITY | PRIVACY | LEGAL | None
-    allow_generation: bool
-    allow_auto_send: bool
-    action: Action                 # предварительное решение до retrieval/generation
     target_queue: str
     policy_rule_id: str
     policy_version: str
@@ -56,6 +74,7 @@ class Hit:
     auto_allowed: bool
     owner: str | None = None
     expires_at: str | None = None
+    approval_status: str = "published"   # published | draft | review
     # диагностика каскадных ошибок: совпала ли тема документа с предсказанной
     doc_topics: list[str] = field(default_factory=list)
     topic_match: bool = False
@@ -89,11 +108,12 @@ class Validation:
 @dataclass
 class Decision:
     final_action: Action
+    status: ProcessingStatus
     target_queue: str
     reason: str
     answer_text: str | None
     citations: list[str]
-    latency_ms: dict
+    latency_ms: dict           # ключи sync_route_ms и async_fulfill_ms обязательны
 
 
 @dataclass
@@ -109,6 +129,16 @@ class AuditEvent:
     validation: dict | None
     decision: dict
     latency_ms: dict
+
+
+@dataclass
+class RoutingOutcome:
+    """Результат синхронного контура. Всё, что нужно асинхронной части, — здесь."""
+    decision: Decision
+    audit: AuditEvent
+    redacted: RedactedText
+    classification: Classification
+    policy: PolicyDecision
 
 
 class LLM(Protocol):
