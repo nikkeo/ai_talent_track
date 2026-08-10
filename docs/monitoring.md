@@ -14,7 +14,7 @@ Python 3.14, mock LLM, последовательный запуск с реал
 1 625 тикетов/с; `sync_route_ms` p50/p95/p99 = **0,183/0,214/0,239 мс**,
 `async_fulfill_ms` = **0,142/0,362/0,393 мс**, полный вызов =
 **0,713/0,942/1,177 мс**. Прогретый `classifier.predict()` на 200 вызовах:
-p95 **0,152 мс**. Это baseline PoC на локальных данных, а не обещание production:
+p95 **0,148 мс**. Это baseline PoC на локальных данных, а не обещание production:
 внешняя LLM радикально изменит async latency. Панель показывает p50/p95/p99 по
 каждому этапу, throughput, error/timeout rate, queue depth и oldest-message age;
 `sync_route_ms` сверяется с бюджетом 500 мс.

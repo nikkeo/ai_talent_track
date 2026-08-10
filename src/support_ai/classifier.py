@@ -23,7 +23,7 @@ def _get_model() -> tuple[TfidfVectorizer, LogisticRegression]:
             rows = [json.loads(line) for line in config.TRAIN_TICKETS.read_text().splitlines() if line]
             vectorizer = TfidfVectorizer(ngram_range=(1, 2), lowercase=True)
             features = vectorizer.fit_transform(row["text"] for row in rows)
-            estimator = LogisticRegression(C=10.0, max_iter=1_000, random_state=0)
+            estimator = LogisticRegression(C=100.0, max_iter=1_000, random_state=0)
             estimator.fit(features, [row["label"] for row in rows])
             _model = vectorizer, estimator
     return _model
