@@ -138,10 +138,14 @@ def _decision(
     answer: str | None = None,
     citations: list[str] | None = None,
 ) -> Decision:
+    if outcome.policy.route == "ESCALATE" or action == "AUTO_RESPONSE":
+        target_queue = outcome.policy.target_queue
+    else:
+        target_queue = "general"
     return Decision(
         final_action=action,  # type: ignore[arg-type]
         status="COMPLETED" if action == "AUTO_RESPONSE" else "NEEDS_HUMAN",
-        target_queue=outcome.policy.target_queue,
+        target_queue=target_queue,
         reason=reason,
         answer_text=answer,
         citations=citations or [],
