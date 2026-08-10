@@ -26,6 +26,8 @@ _EXPECTED_RISK_TYPE = {
     "SECURITY": "SECURITY",
 }
 _THRESHOLDS = [value / 100 for value in range(30, 71, 5)]
+_AUTO_CONF_THRESHOLDS = [value / 100 for value in range(30, 71, 5)]
+_AUTO_RELEVANCE_THRESHOLDS = [value / 100 for value in range(35, 61, 5)]
 _RETRIEVAL_CASES = [
     ("видео не воспроизводится в мобильном приложении", "TECHNICAL", "KB-TECH-125"),
     ("в уроке совсем нет звука", "TECHNICAL", "KB-TECH-131"),
@@ -178,6 +180,61 @@ def _end_to_end(eval_rows: list[dict[str, str]]) -> dict[str, object]:
     }
 
 
+def _auto_threshold_metrics(
+    eval_rows: list[dict[str, str]],
+    auto_conf_threshold: float,
+    auto_relevance_threshold: float,
+) -> dict[str, object]:
+    """Контрфактический e2e-прогон двух порогов права на автоответ."""
+    from .pipeline import process
+
+    unsafe_auto = 0
+    wrong_route = 0
+    extra_escalation = 0
+    operator_edit = 0
+    actions = {"AUTO_RESPONSE": 0, "DRAFT_FOR_OPERATOR": 0, "ESCALATE": 0}
+    suffix = f"ac{int(auto_conf_threshold * 100)}:ar{int(auto_relevance_threshold * 100)}"
+    with (
+        patch.object(config, "AUTO_CONF_THRESHOLD", auto_conf_threshold),
+        patch.object(config, "AUTO_RELEVANCE_THRESHOLD", auto_relevance_threshold),
+    ):
+        for index, row in enumerate(eval_rows):
+            ticket = Ticket(
+                ticket_id=f"eval-sweep-{index}-{suffix}",
+                customer_ref="eval",
+                channel="web",
+                language="ru",
+                text=row["text"],
+                created_at=datetime.now(UTC).isoformat(),
+                idempotency_key=f"eval:sweep:{index}:{suffix}",
+            )
+            decision, event = process(ticket, llm_mode="mock")
+            action = decision.final_action
+            actions[action] = actions.get(action, 0) + 1
+            expected = row["label"]
+            if expected in _HIGH_RISK:
+                unsafe_auto += action != "ESCALATE"
+                continue
+            predicted = (event.classification or {}).get("topic", "UNKNOWN")
+            extra_escalation += action == "ESCALATE"
+            wrong_route += predicted not in {"UNKNOWN", expected} and action != "ESCALATE"
+            operator_edit += (
+                action == "DRAFT_FOR_OPERATOR" and expected in config.AUTO_ALLOWLIST
+            )
+
+    cost = 1000 * unsafe_auto + 50 * wrong_route + 5 * extra_escalation + operator_edit
+    return {
+        "auto_conf": auto_conf_threshold,
+        "auto_relevance": auto_relevance_threshold,
+        "unsafe_auto": unsafe_auto,
+        "wrong_route": wrong_route,
+        "extra_escalation": extra_escalation,
+        "operator_edit": operator_edit,
+        "cost": cost,
+        "actions": actions,
+    }
+
+
 def main() -> int:
     """Оценить classifier, решения policy и retrieval на непересекающемся eval."""
     train_rows = _read_jsonl(config.TRAIN_TICKETS)
@@ -236,6 +293,18 @@ def main() -> int:
     p95_latency = float(np.percentile(latencies_ms, 95))
 
     e2e = _end_to_end(eval_rows)
+    auto_sweep = [
+        _auto_threshold_metrics(eval_rows, auto_conf, auto_relevance)
+        for auto_conf in _AUTO_CONF_THRESHOLDS
+        for auto_relevance in _AUTO_RELEVANCE_THRESHOLDS
+    ]
+    current_auto = next(
+        row for row in auto_sweep
+        if abs(float(row["auto_conf"]) - config.AUTO_CONF_THRESHOLD) < 1e-9
+        and abs(float(row["auto_relevance"]) - config.AUTO_RELEVANCE_THRESHOLD) < 1e-9
+    )
+    min_auto_cost = min(int(row["cost"]) for row in auto_sweep)
+    min_auto_rows = [row for row in auto_sweep if int(row["cost"]) == min_auto_cost]
 
     lines = [
         "# Offline-отчёт",
@@ -249,6 +318,8 @@ def main() -> int:
         "| Метрика | Значение |",
         "|---|---:|",
         f"| CONF_THRESHOLD | {config.CONF_THRESHOLD:.2f} |",
+        f"| AUTO_CONF_THRESHOLD | {config.AUTO_CONF_THRESHOLD:.2f} |",
+        f"| AUTO_RELEVANCE_THRESHOLD | {config.AUTO_RELEVANCE_THRESHOLD:.2f} |",
         f"| Macro-F1 | {macro_f1:.3f} |",
         f"| Model recall high-risk macro | {float(current['model_risk_recall']):.3f} |",
         f"| Policy recall high-risk с корректным `risk_type` | {float(current['policy_risk_recall']):.3f} |",
@@ -310,6 +381,32 @@ def main() -> int:
         f"Выбран кандидат `{float(selected['threshold']):.2f}`: минимальная стоимость `{int(selected['cost'])}`. При равной стоимости tie-break предпочитает больший policy risk recall, затем model risk recall и меньшую долю UNKNOWN. Это выбор по последствиям решений, а не по максимуму F1.",
         "",
         "Cost = `1000 × unsafe_auto + 50 × wrong_route + 5 × extra escalation + 1 × operator edit`. По условию эксперимента `unsafe_auto` означает любой high-risk тикет с route не `ESCALATE`, включая `DRAFT_ONLY`.",
+        "",
+        "## Свип порогов права на AUTO_RESPONSE",
+        "",
+        "Каждая ячейка — cost сквозного прогона при паре `AUTO_CONF_THRESHOLD × AUTO_RELEVANCE_THRESHOLD`; runtime-config после точки восстанавливается. Это диагностический свип на том же development-наборе, а не независимый выбор порогов.",
+        "",
+        "| AUTO_CONF \\ AUTO_RELEVANCE | "
+        + " | ".join(f"{value:.2f}" for value in _AUTO_RELEVANCE_THRESHOLDS)
+        + " |",
+        "|---:|" + "---:|" * len(_AUTO_RELEVANCE_THRESHOLDS),
+    ])
+    for auto_conf in _AUTO_CONF_THRESHOLDS:
+        costs = [
+            int(row["cost"])
+            for row in auto_sweep
+            if abs(float(row["auto_conf"]) - auto_conf) < 1e-9
+        ]
+        lines.append(f"| {auto_conf:.2f} | " + " | ".join(map(str, costs)) + " |")
+    current_actions = current_auto["actions"]
+    assert isinstance(current_actions, dict)
+    indistinguishable = len(min_auto_rows) > 1
+    lines.extend([
+        "",
+        f"Текущая пара `{config.AUTO_CONF_THRESHOLD:.2f} × {config.AUTO_RELEVANCE_THRESHOLD:.2f}` даёт cost `{int(current_auto['cost'])}`: unsafe_auto `{int(current_auto['unsafe_auto'])}`, wrong_route `{int(current_auto['wrong_route'])}`, extra escalation `{int(current_auto['extra_escalation'])}`, operator edit `{int(current_auto['operator_edit'])}`; действия — AUTO `{int(current_actions['AUTO_RESPONSE'])}`, draft `{int(current_actions['DRAFT_FOR_OPERATOR'])}`, escalation `{int(current_actions['ESCALATE'])}`.",
+        f"Минимальный cost `{min_auto_cost}` имеют `{len(min_auto_rows)}` пар; "
+        + ("набор не различает их, поэтому подбирать по нему пороги нельзя." if indistinguishable else "набор формально различает одну пару, но после настройки на этих же 20 примерах это не оценка обобщения."),
+        "Значения `0.60` и `0.50` остаются консервативным выбором выше наблюдённых пробоев, а не выводом из этого малого development-набора.",
         "",
         "## Retrieval-набор",
         "",

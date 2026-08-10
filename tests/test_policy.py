@@ -75,6 +75,45 @@ def test_allowlisted_topic_becomes_auto_candidate() -> None:
     assert result.policy_rule_id == "AUTO-001"
 
 
+@pytest.mark.parametrize("confidence", [config.CONF_THRESHOLD, 0.59])
+def test_known_allowlisted_topic_below_auto_threshold_is_draft_only(confidence: float) -> None:
+    result = decide(
+        classification("HOWTO", confidence),
+        RedactedText("как скачать урок", []),
+        context(),
+    )
+
+    assert result.route == "DRAFT_ONLY"
+    assert result.policy_rule_id == "AUTO-CONF-001"
+    assert result.reason == "AUTO_CONFIDENCE_TOO_LOW"
+
+
+def test_auto_threshold_itself_allows_auto_candidate() -> None:
+    result = decide(
+        classification("HOWTO", config.AUTO_CONF_THRESHOLD),
+        RedactedText("как скачать урок", []),
+        context(),
+    )
+
+    assert result.route == "AUTO_CANDIDATE"
+    assert result.policy_rule_id == "AUTO-001"
+
+
+def test_duplicate_operations_in_bank_history_trigger_financial_rule() -> None:
+    result = decide(
+        classification("HOWTO", 0.99),
+        RedactedText(
+            "за один курс в банковской истории теперь две одинаковые операции, как скачать урок",
+            [],
+        ),
+        context(),
+    )
+
+    assert result.route == "ESCALATE"
+    assert result.policy_rule_id == "FIN-001"
+    assert result.risk_type == "FINANCIAL"
+
+
 def test_card_signal_forbids_automation() -> None:
     result = decide(classification("HOWTO", 0.9), RedactedText("как сменить карту <CARD_1>", ["CARD"]), context("CARD"))
 
@@ -102,6 +141,7 @@ def test_unavailable_policy_fails_closed(monkeypatch) -> None:
         "хочу обсудить ошибку воспроизведения",
         "хочу оставить жалобу на зависание приложения",
         "как включить двойную скорость воспроизведения",
+        "как выполнить две одинаковые операции в редакторе",
         "возврат на предыдущий экран не работает",
     ],
 )

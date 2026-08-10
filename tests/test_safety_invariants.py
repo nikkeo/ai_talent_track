@@ -238,7 +238,7 @@ def test_all_demo_scenarios_have_expected_actions(monkeypatch) -> None:
     monkeypatch.setattr("support_ai.pipeline.validator.validate", lambda *args: Validation(True))
     rows = [json.loads(line) for line in config.DEMO_TICKETS.read_text().splitlines()]
     expected = {
-        "S1": ("AUTO_RESPONSE", "automation", "VALIDATED_AUTO_RESPONSE"),
+        "S1": ("DRAFT_FOR_OPERATOR", "general", "VALIDATION_FAILED:LOW_RELEVANCE_FOR_AUTO"),
         "S2": ("ESCALATE", "financial-support", "HIGH_RISK_FINANCIAL"),
         "S3": ("DRAFT_FOR_OPERATOR", "general", "LLM_FAILED_TEMPLATE_FALLBACK"),
         "S4": ("ESCALATE", "general", "LOW_CONFIDENCE"),

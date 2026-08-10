@@ -8,6 +8,7 @@ from support_ai.contracts import (
 )
 from support_ai.generator import make_draft
 from support_ai.llm import FailingLLM, MockLLM
+from support_ai import config
 from support_ai.validator import validate
 
 
@@ -136,3 +137,22 @@ def test_validator_rejects_expired_article() -> None:
 
     assert result.ok is False
     assert "ARTICLE_EXPIRED" in result.failed_checks
+
+
+def test_validator_rejects_low_relevance_for_auto() -> None:
+    hit = _hit(score=config.AUTO_RELEVANCE_THRESHOLD - 0.001)
+    draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
+
+    result = validate(draft, _retrieval(hit), _policy())
+
+    assert result.ok is False
+    assert "LOW_RELEVANCE_FOR_AUTO" in result.failed_checks
+
+
+def test_validator_accepts_auto_relevance_at_boundary() -> None:
+    hit = _hit(score=config.AUTO_RELEVANCE_THRESHOLD)
+    draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
+
+    result = validate(draft, _retrieval(hit), _policy())
+
+    assert "LOW_RELEVANCE_FOR_AUTO" not in result.failed_checks

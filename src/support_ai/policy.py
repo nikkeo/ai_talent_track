@@ -67,6 +67,8 @@ _FINANCIAL_PATTERNS = _compile((
     r"\b(?:деньги|денеж\w*|средств\w*|оплат\w*|плат[её]ж\w*|стоимост\w*)\b.{0,35}\b(?:возврат\w*|возмещен\w*|компенсац\w*)\b",
     r"\b(?:возмещен\w*|компенсац\w*)\b",
     r"\b(?:двойн\w*|дважды|повторн\w*)\b.{0,25}\b(?:списа\w*|оплат\w*|плат[её]ж\w*)\b",
+    r"\b(?:банк\w*|банковск\w+)\b.{0,60}\b(?:две|два|2)\s+одинаков\w+\s+операци\w*\b",
+    r"\b(?:две|два|2)\s+одинаков\w+\s+операци\w*\b.{0,60}\b(?:банк\w*|банковск\w+)\b",
     r"\b(?:оплат\w*|плат[её]ж\w*)\b.{0,30}\b(?:продублиров\w*|отклон\w*|не\s+проходит|ошибк\w*|неверн\w+\s+сумм\w*)\b",
     r"\b(?:банк|ошибк\w*|не\s+могу)\b.{0,30}\b(?:оплат\w*|заплатить)\b",
     r"\bденьги\b.{0,40}\bотмен\w*\b.{0,40}\bне\s+зачислен\w*\b",
@@ -102,7 +104,7 @@ def decide(
     redacted: RedactedText,
     context: PolicyContext,
 ) -> PolicyDecision:
-    """Правила SEC-001 / PRIV-001 / LEG-001 / FIN-001 / LOW-001 / AUTO-001 / DEFAULT.
+    """Правила SEC/PRIV/LEG/FIN/LOW/AUTO-CONF/AUTO/DEFAULT.
 
     Принимает именно RedactedText: неверный вызов с сырым текстом виден по типу.
     Возвращает ровно один route: ESCALATE | DRAFT_ONLY | AUTO_CANDIDATE.
@@ -127,6 +129,15 @@ def decide(
     if classification.topic == "UNKNOWN" or classification.confidence < config.CONF_THRESHOLD:
         return _decision("ESCALATE", "MEDIUM", None, "general", "LOW-001", "LOW_CONFIDENCE")
     if classification.topic in config.AUTO_ALLOWLIST:
+        if classification.confidence < config.AUTO_CONF_THRESHOLD:
+            return _decision(
+                "DRAFT_ONLY",
+                "MEDIUM",
+                None,
+                "general",
+                "AUTO-CONF-001",
+                "AUTO_CONFIDENCE_TOO_LOW",
+            )
         return _decision("AUTO_CANDIDATE", "LOW", None, "automation", "AUTO-001", "AUTO_ALLOWED_TOPIC")
     return _decision("DRAFT_ONLY", "MEDIUM", None, "general", "DEFAULT", "HUMAN_REVIEW_REQUIRED")
 

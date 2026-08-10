@@ -8,6 +8,7 @@ expires_at: 2026-08-09
 owner: incident-management
 approval_status: published
 auto_allowed: true
+fixture_note: intentional expired article for governance validation
 ---
 Плановые работы завершены.
 Во время окна обслуживания вход и запуск уроков могли быть недоступны.

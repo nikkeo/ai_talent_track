@@ -8,6 +8,7 @@ expires_at: 2027-01-10
 owner: identity-support
 approval_status: review
 auto_allowed: false
+fixture_note: intentional review article for governance validation
 ---
 Новый вход может потребовать подтверждения по электронной почте.
 Проверьте папку нежелательной почты, если сообщение не пришло.

@@ -28,7 +28,7 @@ Retrieval проверяется Recall@3 по ручным парам запр�
 
 ## Пороги, low-confidence и UNKNOWN
 
-Порог классификации `CONF_THRESHOLD = 0.30`, relevance `RELEVANCE_THRESHOLD = 0.35`, лимит ответа `MAX_ANSWER_CHARS = 1200`; единственный runtime-источник этих значений — `config.py`. Retrieval лишь возвращает `max_score` и использованный порог для диагностики. Pipeline решает, достаточно ли score, а validator окончательно решает право на auto-response.
+Порог классификации `CONF_THRESHOLD = 0.30`, граница контекста для черновика `RELEVANCE_THRESHOLD = 0.35`, пороги права на автоответ `AUTO_CONF_THRESHOLD = 0.60` и `AUTO_RELEVANCE_THRESHOLD = 0.50`, лимит ответа `MAX_ANSWER_CHARS = 1200`; единственный runtime-источник этих значений — `config.py`. Score от `0.35` разрешает grounded draft оператору, но только score от `0.50` может пройти validator для auto-response.
 
 Текущий порог выбран свипом `0.30–0.70` на development/eval-наборе по функции стоимости
 

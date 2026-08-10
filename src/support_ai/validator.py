@@ -22,7 +22,8 @@ def validate(draft: Draft, retrieval: RetrievalResult, policy: PolicyDecision) -
     """Право на автоответ проверяется здесь и только здесь.
 
     Требуется одновременно: policy.route == AUTO_CANDIDATE, citation на реально
-    найденный документ, hit.auto_allowed, approval_status == "published",
+    найденный документ, retrieval.max_score не ниже порога автоответа,
+    hit.auto_allowed, approval_status == "published",
     заданный owner, заданный и не истёкший expires_at, отсутствие PII и
     плейсхолдеров в тексте, отсутствие запрещённых обещаний, длина не выше
     config.MAX_ANSWER_CHARS.
@@ -37,6 +38,8 @@ def validate(draft: Draft, retrieval: RetrievalResult, policy: PolicyDecision) -
 
     if policy.route != "AUTO_CANDIDATE":
         failed.append("POLICY_NOT_AUTO_CANDIDATE")
+    elif retrieval.max_score < config.AUTO_RELEVANCE_THRESHOLD:
+        failed.append("LOW_RELEVANCE_FOR_AUTO")
     if not text:
         failed.append("EMPTY_DRAFT")
     if not draft.citations:
