@@ -32,4 +32,13 @@ def normalize(ticket: Ticket) -> str:
         if stripped == "--" or _REPLY_MARKER.match(stripped):
             break
         kept.append(line)
-    return " ".join(" ".join(kept).split())[:MAX_TICKET_CHARS]
+    return " ".join(" ".join(kept).split())
+
+
+def bounded(text: str) -> str:
+    """Обрезанная версия для классификатора и LLM.
+
+    Policy при этом видит текст целиком: иначе лимит длины становится способом
+    вынести рисковое слово за границу проверки и получить автоответ.
+    """
+    return text[:MAX_TICKET_CHARS]

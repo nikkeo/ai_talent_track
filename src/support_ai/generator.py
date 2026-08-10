@@ -1,5 +1,7 @@
 """Grounded-генерация, принимающая только очищенный от PII тикет."""
 
+import re
+
 from . import config
 from .contracts import Draft, LLM, PolicyDecision, RetrievalResult, SanitizedTicket
 
@@ -11,9 +13,25 @@ _SYSTEM_PROMPT = """Ты создаёшь только текстовый чер
 security-операции, блокировку аккаунта либо изменение подписки."""
 
 
+_INJECTION = re.compile(
+    r"(?im)^.*\b(?:ignore\s+(?:all\s+)?previous|disregard\s+previous|system\s*:|"
+    r"ответь\s+ровно|игнорируй|забудь\s+инструкц|new\s+instructions?)\b.*$"
+)
+
+
+def _sanitize_context(text: str) -> str:
+    """Найденный документ — данные, а не инструкция.
+
+    Строки, похожие на команду модели, вырезаются до сборки ответа: KB считается
+    недоверенным содержимым ровно так же, как текст пользователя.
+    """
+    cleaned = _INJECTION.sub(" ", text)
+    return " ".join(cleaned.split())
+
+
 def _template(retrieval: RetrievalResult) -> str:
     hit = retrieval.hits[0]
-    return f"По инструкции «{hit.title}»: {hit.snippet}"
+    return f"По инструкции «{hit.title}»: {_sanitize_context(hit.snippet)}"
 
 
 def make_draft(
@@ -38,7 +56,7 @@ def make_draft(
     citations = [hit.doc_id]
     user_prompt = (
         "<context>\n"
-        f"{hit.snippet}\n"
+        f"{_sanitize_context(hit.snippet)}\n"
         "</context>\n"
         "<user_data>\n"
         f"{ticket.redacted_text}\n"

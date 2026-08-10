@@ -38,8 +38,12 @@ def decide(
 
     text = redacted.text.casefold()
     rules = (
-        ("SEC-001", ("взлом", "украли аккаунт", "украли доступ", "мошенник", "фишинг"), "SECURITY", "security"),
-        ("PRIV-001", ("удалить мои данные", "удалите мои", "утечк", "персональн"), "PRIVACY", "privacy"),
+        ("SEC-001", ("взлом", "украли аккаунт", "украли доступ", "мошенник", "фишинг",
+                     "неизвестн", "учетных данных", "учётных данных", "подозрительн вход",
+                     "чужое устройство", "чужого устройства"), "SECURITY", "security"),
+        ("PRIV-001", ("удалить мои данные", "удалите мои", "утечк", "персональн",
+                      "запрещаю хранить", "хранить информацию", "выгрузк", "обо мне",
+                      "о пользователе", "gdpr"), "PRIVACY", "privacy"),
         ("LEG-001", ("суд", "претензи", "жалоб", "надзор", "нарушение договора"), "LEGAL", "legal"),
     )
     for rule, keywords, risk_type, queue in rules:
@@ -49,7 +53,7 @@ def decide(
     financial = (
         classification.topic in {"PAYMENT", "REFUND"}
         or "CARD" in context.found_pii_types
-        or any(word in text for word in ("списан", "возврат", "верните деньги", "chargeback"))
+        or any(word in text for word in ("списа", "возврат", "верните деньги", "вернуть деньги", "chargeback", "двойн"))
     )
     if financial:
         return _decision(

@@ -3,7 +3,10 @@
 import hashlib
 from pathlib import Path
 
-CONF_THRESHOLD = 0.65
+# Выбран свипом по стоимости решений, см. docs/eval_report.md.
+# Оговорка: на eval-наборе из 20 примеров стоимость равна нулю для 0.30 и 0.35,
+# то есть выбор слабо идентифицирован — при первых реальных данных пересчитать.
+CONF_THRESHOLD = 0.30
 RELEVANCE_THRESHOLD = 0.35
 
 # Тема лишь допускает автоответ. Окончательное право даёт article.auto_allowed

@@ -21,7 +21,7 @@ from .contracts import (
     Ticket,
     Validation,
 )
-from .normalize import detect_language, normalize
+from .normalize import bounded, detect_language, normalize
 from .pii import redact
 
 
@@ -84,7 +84,7 @@ def route(ticket: Ticket, *, faults: frozenset[str] = frozenset()) -> RoutingOut
         idempotency_key=ticket.idempotency_key,
         channel=ticket.channel,
         language=detect_language(normalized),
-        redacted_text=redacted.text,
+        redacted_text=bounded(redacted.text),
         found_pii_types=redacted.found_types,
         product=ticket.metadata.get("product"),
         app_version=ticket.metadata.get("app_version"),
@@ -168,6 +168,12 @@ def _fulfillment_event(
     draft_data = asdict(draft) if draft is not None else None
     if draft_data is not None:
         draft_data["llm_usage"] = llm_usage
+        # Непрошедший валидацию текст мог содержать PII или запрещённое обещание.
+        # В аудит идут только метаданные: сам текст не сохраняется.
+        if validation is not None and not validation.ok:
+            draft_data["text_length"] = len(draft_data.get("text") or "")
+            draft_data["text"] = None
+            draft_data["text_withheld"] = "VALIDATION_FAILED"
     return AuditEvent(
         event_type="FULFILLMENT_COMPLETED",
         schema_version=AUDIT_SCHEMA_VERSION,

@@ -1,6 +1,7 @@
 """Воспроизводимая offline-оценка классификатора, policy и retrieval."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
 from . import config, policy
-from .contracts import Classification, PolicyContext
+from .contracts import Classification, PolicyContext, Ticket
 from .pii import redact
 from .retrieval import search
 
@@ -138,6 +139,44 @@ def _threshold_metrics(
     }
 
 
+
+_HIGH_RISK_LABELS = {"PAYMENT", "REFUND", "PRIVACY", "SECURITY"}
+
+
+def _end_to_end(eval_rows: list[dict[str, str]]) -> dict[str, object]:
+    """Сквозной прогон process() по eval-набору: что система реально сделала бы.
+
+    Классификатор и policy меряются отдельно выше; здесь — итог всей цепочки,
+    включая retrieval, генерацию и валидацию. Это и есть automation rate,
+    к которому привязан North Star.
+    """
+    from .pipeline import process
+
+    actions: dict[str, int] = {"AUTO_RESPONSE": 0, "DRAFT_FOR_OPERATOR": 0, "ESCALATE": 0}
+    unsafe = 0
+    for index, row in enumerate(eval_rows):
+        ticket = Ticket(
+            ticket_id=f"eval-{index}",
+            customer_ref="eval",
+            channel="web",
+            language="ru",
+            text=row["text"],
+            created_at=datetime.now(UTC).isoformat(),
+            idempotency_key=f"eval:{index}:v1",
+        )
+        decision, _event = process(ticket, llm_mode="mock")
+        actions[decision.final_action] = actions.get(decision.final_action, 0) + 1
+        if row["label"] in _HIGH_RISK_LABELS and decision.final_action != "ESCALATE":
+            unsafe += 1
+    total = len(eval_rows) or 1
+    return {
+        "automation_rate": actions["AUTO_RESPONSE"] / total,
+        "draft_rate": actions["DRAFT_FOR_OPERATOR"] / total,
+        "escalation_rate": actions["ESCALATE"] / total,
+        "unsafe_automation": unsafe,
+    }
+
+
 def main() -> int:
     """Оценить classifier, решения policy и retrieval на непересекающемся eval."""
     train_rows = _read_jsonl(config.TRAIN_TICKETS)
@@ -197,6 +236,8 @@ def main() -> int:
     unknown_share = float(current["unknown_share"])
     p95_latency = float(np.percentile(latencies_ms, 95))
 
+    e2e = _end_to_end(eval_rows)
+
     lines = [
         "# Offline-отчёт",
         "",
@@ -218,6 +259,18 @@ def main() -> int:
         f"| Retrieval Recall@3 на {len(_RETRIEVAL_CASES)} ручных парах | {recall_at_3:.3f} |",
         "",
         "Model recall требует точного класса от классификатора. Policy recall считает high-risk тикеты, для которых `policy.decide` вернул `ESCALATE` и правильный `risk_type`; это разные границы качества.",
+        "",
+        "## Сквозной прогон: что система сделала бы с eval-набором",
+        "",
+        "| Метрика | Значение |",
+        "|---|---:|",
+        f"| Automation rate (AUTO_RESPONSE) | {_percent(e2e['automation_rate'])} |",
+        f"| Draft rate (оператору с черновиком) | {_percent(e2e['draft_rate'])} |",
+        f"| Escalation rate | {_percent(e2e['escalation_rate'])} |",
+        f"| Небезопасная автоматизация high-risk | {e2e['unsafe_automation']} |",
+        "",
+        "Последняя строка — главный guardrail: high-risk тикет, не ушедший в `ESCALATE`. "
+        "Любое значение больше нуля блокирует включение автоответов.",
         "",
         "## Классы на текущем config",
         "",
