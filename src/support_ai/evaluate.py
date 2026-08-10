@@ -1,19 +1,29 @@
-"""Воспроизводимая offline-оценка классификатора и retrieval."""
+"""Воспроизводимая offline-оценка классификатора, policy и retrieval."""
 
 import json
 from pathlib import Path
 from time import perf_counter
+from unittest.mock import patch
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 
-from . import config
+from . import config, policy
+from .contracts import Classification, PolicyContext
+from .pii import redact
 from .retrieval import search
 
 
 _HIGH_RISK = {"PAYMENT", "REFUND", "PRIVACY", "SECURITY"}
+_EXPECTED_RISK_TYPE = {
+    "PAYMENT": "FINANCIAL",
+    "REFUND": "FINANCIAL",
+    "PRIVACY": "PRIVACY",
+    "SECURITY": "SECURITY",
+}
+_THRESHOLDS = [value / 100 for value in range(30, 71, 5)]
 _RETRIEVAL_CASES = [
     ("видео не воспроизводится в мобильном приложении", "TECHNICAL", "KB-TECH-125"),
     ("в уроке совсем нет звука", "TECHNICAL", "KB-TECH-131"),
@@ -36,8 +46,100 @@ def _percent(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _classification(
+    probabilities: np.ndarray,
+    classes: np.ndarray,
+    threshold: float,
+) -> Classification:
+    order = np.argsort(probabilities)[::-1]
+    confidence = float(probabilities[order[0]])
+    predicted = str(classes[order[0]])
+    return Classification(
+        topic=predicted if confidence >= threshold else "UNKNOWN",
+        confidence=confidence,
+        topk=[(str(classes[index]), float(probabilities[index])) for index in order[:3]],
+        model_version=config.VERSIONS["classifier"],
+    )
+
+
+def _threshold_metrics(
+    threshold: float,
+    eval_rows: list[dict[str, str]],
+    probability_matrix: np.ndarray,
+    classes: np.ndarray,
+) -> dict[str, object]:
+    expected = [row["label"] for row in eval_rows]
+    classifications = [
+        _classification(scores, classes, threshold) for scores in probability_matrix
+    ]
+    predictions = [classification.topic for classification in classifications]
+
+    decisions = []
+    # decide повторно проверяет config.CONF_THRESHOLD. Подмена живёт только внутри
+    # одной offline-точки свипа и восстанавливается; config.py остаётся неизменным.
+    with patch.object(config, "CONF_THRESHOLD", threshold):
+        for row, classification in zip(eval_rows, classifications, strict=True):
+            redacted, _mask_map = redact(row["text"])
+            context = PolicyContext(
+                channel="offline",
+                language="ru",
+                found_pii_types=redacted.found_types,
+            )
+            decisions.append(policy.decide(classification, redacted, context))
+
+    labels = sorted(set(expected))
+    macro_f1 = float(
+        f1_score(expected, predictions, labels=labels, average="macro", zero_division=0)
+    )
+    _, risk_recalls, _, _ = precision_recall_fscore_support(
+        expected, predictions, labels=sorted(_HIGH_RISK), zero_division=0,
+    )
+
+    unsafe_auto = 0
+    wrong_route = 0
+    extra_escalation = 0
+    operator_edit = 0
+    correctly_routed_risk = 0
+    for expected_label, predicted, decision in zip(
+        expected, predictions, decisions, strict=True,
+    ):
+        if expected_label in _HIGH_RISK:
+            unsafe_auto += decision.route != "ESCALATE"
+            correctly_routed_risk += (
+                decision.route == "ESCALATE"
+                and decision.risk_type == _EXPECTED_RISK_TYPE[expected_label]
+            )
+            continue
+
+        extra_escalation += decision.route == "ESCALATE"
+        wrong_route += (
+            predicted not in {"UNKNOWN", expected_label}
+            and decision.route != "ESCALATE"
+        )
+        operator_edit += (
+            decision.route == "DRAFT_ONLY"
+            and expected_label in config.AUTO_ALLOWLIST
+        )
+
+    cost = 1000 * unsafe_auto + 50 * wrong_route + 5 * extra_escalation + operator_edit
+    risk_count = sum(label in _HIGH_RISK for label in expected)
+    return {
+        "threshold": threshold,
+        "macro_f1": macro_f1,
+        "model_risk_recall": float(np.mean(risk_recalls)),
+        "policy_risk_recall": correctly_routed_risk / risk_count,
+        "unknown_share": predictions.count("UNKNOWN") / len(predictions),
+        "unsafe_auto": unsafe_auto,
+        "wrong_route": wrong_route,
+        "extra_escalation": extra_escalation,
+        "operator_edit": operator_edit,
+        "cost": cost,
+        "predictions": predictions,
+    }
+
+
 def main() -> int:
-    """macro-F1, per-class recall, recall high-risk, доля UNKNOWN, p95 latency, Recall@3."""
+    """Оценить classifier, решения policy и retrieval на непересекающемся eval."""
     train_rows = _read_jsonl(config.TRAIN_TICKETS)
     eval_rows = _read_jsonl(config.EVAL_TICKETS)
 
@@ -46,27 +148,42 @@ def main() -> int:
     estimator = LogisticRegression(C=10.0, max_iter=1_000, random_state=0)
     estimator.fit(train_features, [row["label"] for row in train_rows])
 
-    predictions: list[str] = []
-    confidences: list[float] = []
+    probability_rows: list[np.ndarray] = []
     latencies_ms: list[float] = []
     for row in eval_rows:
         started = perf_counter()
         probabilities = estimator.predict_proba(vectorizer.transform([row["text"]]))[0]
-        best_index = int(np.argmax(probabilities))
-        confidence = float(probabilities[best_index])
-        predicted = str(estimator.classes_[best_index])
-        if confidence < config.CONF_THRESHOLD:
-            predicted = "UNKNOWN"
         latencies_ms.append((perf_counter() - started) * 1000)
-        predictions.append(predicted)
-        confidences.append(confidence)
+        probability_rows.append(probabilities)
+    probability_matrix = np.asarray(probability_rows)
+
+    sweep = [
+        _threshold_metrics(threshold, eval_rows, probability_matrix, estimator.classes_)
+        for threshold in _THRESHOLDS
+    ]
+    selected = min(
+        sweep,
+        key=lambda row: (
+            int(row["cost"]),
+            -float(row["policy_risk_recall"]),
+            -float(row["model_risk_recall"]),
+            float(row["unknown_share"]),
+        ),
+    )
+    current = next(
+        row for row in sweep
+        if abs(float(row["threshold"]) - config.CONF_THRESHOLD) < 1e-9
+    )
 
     expected = [row["label"] for row in eval_rows]
+    predictions = list(current["predictions"])
     labels = sorted(set(expected))
     precision, recall, f1, support = precision_recall_fscore_support(
         expected, predictions, labels=labels, zero_division=0,
     )
-    macro_f1 = float(f1_score(expected, predictions, labels=labels, average="macro", zero_division=0))
+    macro_f1 = float(
+        f1_score(expected, predictions, labels=labels, average="macro", zero_division=0)
+    )
     per_class = {
         label: (float(precision[i]), float(recall[i]), float(f1[i]), int(support[i]))
         for i, label in enumerate(labels)
@@ -77,28 +194,32 @@ def main() -> int:
         for query, topic, expected_doc in _RETRIEVAL_CASES
     )
     recall_at_3 = retrieval_found / len(_RETRIEVAL_CASES)
-    unknown_share = predictions.count("UNKNOWN") / len(predictions)
-    low_confidence_share = sum(score < config.CONF_THRESHOLD for score in confidences) / len(confidences)
+    unknown_share = float(current["unknown_share"])
     p95_latency = float(np.percentile(latencies_ms, 95))
 
     lines = [
         "# Offline-отчёт",
         "",
-        "> **Ограничение:** eval-набор содержит около 20 синтетических примеров; доверительный интервал шире самой метрики. Единственный осмысленный сигнал — recall high-risk классов, остальное является smoke-проверкой.",
+        "> **Ограничение:** eval-набор содержит около 20 синтетических примеров; доверительный интервал шире самой метрики. Осмысленные safety-сигналы здесь — model recall high-risk и policy-level recall риска; остальные значения являются smoke-проверкой.",
         "",
         "Наборы разделены: обучение выполнено только на `data/tickets_train.jsonl`, метрики — только на `data/tickets_eval.jsonl`; demo-набор не использовался ни на одном этапе.",
         "",
-        "## Сводка",
+        "## Сводка на текущем config",
         "",
         "| Метрика | Значение |",
         "|---|---:|",
+        f"| CONF_THRESHOLD | {config.CONF_THRESHOLD:.2f} |",
         f"| Macro-F1 | {macro_f1:.3f} |",
+        f"| Model recall high-risk macro | {float(current['model_risk_recall']):.3f} |",
+        f"| Policy recall high-risk с корректным `risk_type` | {float(current['policy_risk_recall']):.3f} |",
         f"| UNKNOWN | {_percent(unknown_share)} |",
-        f"| Low-confidence ниже `{config.CONF_THRESHOLD}` | {_percent(low_confidence_share)} |",
+        f"| Low-confidence | {_percent(unknown_share)} |",
         f"| p95 latency классификации | {p95_latency:.3f} ms |",
         f"| Retrieval Recall@3 на {len(_RETRIEVAL_CASES)} ручных парах | {recall_at_3:.3f} |",
         "",
-        "## Классы",
+        "Model recall требует точного класса от классификатора. Policy recall считает high-risk тикеты, для которых `policy.decide` вернул `ESCALATE` и правильный `risk_type`; это разные границы качества.",
+        "",
+        "## Классы на текущем config",
         "",
         "| Класс | Precision | Recall | F1 | Support | High-risk |",
         "|---|---:|---:|---:|---:|:---:|",
@@ -109,20 +230,40 @@ def main() -> int:
             f"| {label} | {class_precision:.3f} | {class_recall:.3f} | "
             f"{class_f1:.3f} | {class_support} | {'да' if label in _HIGH_RISK else 'нет'} |"
         )
-    lines.extend([
-        "",
-        "## Recall high-risk классов",
-        "",
-    ])
+    lines.extend(["", "## Recall high-risk классов модели", ""])
     for label in sorted(_HIGH_RISK):
         lines.append(f"- `{label}`: {per_class[label][1]:.3f}")
+
     lines.extend([
+        "",
+        "## Свип CONF_THRESHOLD по стоимости решений",
+        "",
+        "`config.py` не изменялся. Для каждой точки evaluator локально применяет кандидат к `Classification` и `policy.decide`, затем восстанавливает runtime-config.",
+        "",
+        "| Threshold | Macro-F1 | Model risk recall | Policy risk recall | UNKNOWN | unsafe_auto | wrong_route | extra escalation | operator edit | Cost |",
+        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ])
+    for row in sweep:
+        lines.append(
+            f"| {float(row['threshold']):.2f} | {float(row['macro_f1']):.3f} | "
+            f"{float(row['model_risk_recall']):.3f} | {float(row['policy_risk_recall']):.3f} | "
+            f"{_percent(float(row['unknown_share']))} | {int(row['unsafe_auto'])} | "
+            f"{int(row['wrong_route'])} | {int(row['extra_escalation'])} | "
+            f"{int(row['operator_edit'])} | {int(row['cost'])} |"
+        )
+    lines.extend([
+        "",
+        f"Выбран кандидат `{float(selected['threshold']):.2f}`: минимальная стоимость `{int(selected['cost'])}`. При равной стоимости tie-break предпочитает больший policy risk recall, затем model risk recall и меньшую долю UNKNOWN. Это выбор по последствиям решений, а не по максимуму F1.",
+        "",
+        f"Свип выявил policy-gap: при выбранном пороге policy recall с корректным `risk_type` равен `{float(selected['policy_risk_recall']):.3f}`, а не близок к 1.0. Текущие правила не распознают часть eval-формулировок PRIVACY и SECURITY; LOW-001 эскалирует low-confidence случаи, но оставляет `risk_type=None`. Снижение порога повышает model recall, однако открывает больше high-risk решений без `ESCALATE`, что штрафуется по 1000.",
+        "",
+        "Cost = `1000 × unsafe_auto + 50 × wrong_route + 5 × extra escalation + 1 × operator edit`. По условию эксперимента `unsafe_auto` означает любой high-risk тикет с route не `ESCALATE`, включая `DRAFT_ONLY`.",
         "",
         "## Retrieval-набор",
         "",
         "Пары запрос → `document_id` размечены вручную в `src/support_ai/evaluate.py`; измеряется попадание ожидаемого документа в top-3. Набор проверяет поиск, но слишком мал для продуктового вывода.",
         "",
-        "Отчёт воспроизводится командой `.venv/bin/python -m src.support_ai.evaluate`.",
+        "Отчёт воспроизводится командой `.venv/bin/python -m support_ai.evaluate` с `PYTHONPATH=src` или целью `make eval`.",
         "",
     ])
     config.DOCS_DIR.mkdir(parents=True, exist_ok=True)

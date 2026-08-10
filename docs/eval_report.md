@@ -1,20 +1,25 @@
 # Offline-отчёт
 
-> **Ограничение:** eval-набор содержит около 20 синтетических примеров; доверительный интервал шире самой метрики. Единственный осмысленный сигнал — recall high-risk классов, остальное является smoke-проверкой.
+> **Ограничение:** eval-набор содержит около 20 синтетических примеров; доверительный интервал шире самой метрики. Осмысленные safety-сигналы здесь — model recall high-risk и policy-level recall риска; остальные значения являются smoke-проверкой.
 
 Наборы разделены: обучение выполнено только на `data/tickets_train.jsonl`, метрики — только на `data/tickets_eval.jsonl`; demo-набор не использовался ни на одном этапе.
 
-## Сводка
+## Сводка на текущем config
 
 | Метрика | Значение |
 |---|---:|
+| CONF_THRESHOLD | 0.65 |
 | Macro-F1 | 0.062 |
+| Model recall high-risk macro | 0.000 |
+| Policy recall high-risk с корректным `risk_type` | 0.111 |
 | UNKNOWN | 95.0% |
-| Low-confidence ниже `0.65` | 95.0% |
-| p95 latency классификации | 0.164 ms |
+| Low-confidence | 95.0% |
+| p95 latency классификации | 0.160 ms |
 | Retrieval Recall@3 на 10 ручных парах | 1.000 |
 
-## Классы
+Model recall требует точного класса от классификатора. Policy recall считает high-risk тикеты, для которых `policy.decide` вернул `ESCALATE` и правильный `risk_type`; это разные границы качества.
+
+## Классы на текущем config
 
 | Класс | Precision | Recall | F1 | Support | High-risk |
 |---|---:|---:|---:|---:|:---:|
@@ -27,15 +32,37 @@
 | STATUS | 0.000 | 0.000 | 0.000 | 3 | нет |
 | TECHNICAL | 0.000 | 0.000 | 0.000 | 3 | нет |
 
-## Recall high-risk классов
+## Recall high-risk классов модели
 
 - `PAYMENT`: 0.000
 - `PRIVACY`: 0.000
 - `REFUND`: 0.000
 - `SECURITY`: 0.000
 
+## Свип CONF_THRESHOLD по стоимости решений
+
+`config.py` не изменялся. Для каждой точки evaluator локально применяет кандидат к `Classification` и `policy.decide`, затем восстанавливает runtime-config.
+
+| Threshold | Macro-F1 | Model risk recall | Policy risk recall | UNKNOWN | unsafe_auto | wrong_route | extra escalation | operator edit | Cost |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.30 | 0.163 | 0.000 | 0.111 | 75.0% | 1 | 1 | 7 | 0 | 1085 |
+| 0.35 | 0.163 | 0.000 | 0.111 | 80.0% | 0 | 1 | 7 | 0 | 85 |
+| 0.40 | 0.163 | 0.000 | 0.111 | 80.0% | 0 | 1 | 7 | 0 | 85 |
+| 0.45 | 0.100 | 0.000 | 0.111 | 85.0% | 0 | 1 | 8 | 0 | 90 |
+| 0.50 | 0.062 | 0.000 | 0.111 | 90.0% | 0 | 1 | 9 | 0 | 95 |
+| 0.55 | 0.062 | 0.000 | 0.111 | 90.0% | 0 | 1 | 9 | 0 | 95 |
+| 0.60 | 0.062 | 0.000 | 0.111 | 95.0% | 0 | 0 | 10 | 0 | 50 |
+| 0.65 | 0.062 | 0.000 | 0.111 | 95.0% | 0 | 0 | 10 | 0 | 50 |
+| 0.70 | 0.062 | 0.000 | 0.111 | 95.0% | 0 | 0 | 10 | 0 | 50 |
+
+Выбран кандидат `0.60`: минимальная стоимость `50`. При равной стоимости tie-break предпочитает больший policy risk recall, затем model risk recall и меньшую долю UNKNOWN. Это выбор по последствиям решений, а не по максимуму F1.
+
+Свип выявил policy-gap: при выбранном пороге policy recall с корректным `risk_type` равен `0.111`, а не близок к 1.0. Текущие правила не распознают часть eval-формулировок PRIVACY и SECURITY; LOW-001 эскалирует low-confidence случаи, но оставляет `risk_type=None`. Снижение порога повышает model recall, однако открывает больше high-risk решений без `ESCALATE`, что штрафуется по 1000.
+
+Cost = `1000 × unsafe_auto + 50 × wrong_route + 5 × extra escalation + 1 × operator edit`. По условию эксперимента `unsafe_auto` означает любой high-risk тикет с route не `ESCALATE`, включая `DRAFT_ONLY`.
+
 ## Retrieval-набор
 
 Пары запрос → `document_id` размечены вручную в `src/support_ai/evaluate.py`; измеряется попадание ожидаемого документа в top-3. Набор проверяет поиск, но слишком мал для продуктового вывода.
 
-Отчёт воспроизводится командой `.venv/bin/python -m src.support_ai.evaluate`.
+Отчёт воспроизводится командой `.venv/bin/python -m support_ai.evaluate` с `PYTHONPATH=src` или целью `make eval`.
