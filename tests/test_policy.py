@@ -1,3 +1,5 @@
+import pytest
+
 from support_ai.contracts import Classification, PolicyContext, RedactedText
 from support_ai.policy import decide
 
@@ -20,6 +22,31 @@ def test_security_rule_has_priority_over_safe_classification() -> None:
     assert result.route == "ESCALATE"
     assert result.policy_rule_id == "SEC-001"
     assert result.target_queue == "security"
+
+
+@pytest.mark.parametrize(
+    ("text", "rule", "queue"),
+    [
+        ("произошла утечка персональных данных", "PRIV-001", "privacy"),
+        ("подам жалобу в надзор и обращусь в суд", "LEG-001", "legal"),
+    ],
+)
+def test_high_risk_keywords_override_safe_topic(text: str, rule: str, queue: str) -> None:
+    result = decide(classification("HOWTO", 0.99), RedactedText(text, []), context())
+
+    assert result.route == "ESCALATE"
+    assert result.policy_rule_id == rule
+    assert result.target_queue == queue
+
+
+def test_first_high_risk_rule_wins() -> None:
+    result = decide(
+        classification("REFUND", 0.99),
+        RedactedText("мошенники требуют возврат, подам в суд", []),
+        context(),
+    )
+
+    assert result.policy_rule_id == "SEC-001"
 
 
 def test_payment_is_never_automatic_despite_confidence() -> None:
