@@ -11,7 +11,7 @@
 | Macro-F1 | 0.062 |
 | UNKNOWN | 95.0% |
 | Low-confidence ниже `0.65` | 95.0% |
-| p95 latency классификации | 0.174 ms |
+| p95 latency классификации | 0.164 ms |
 | Retrieval Recall@3 на 10 ручных парах | 1.000 |
 
 ## Классы
