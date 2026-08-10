@@ -46,8 +46,13 @@ error/timeout rate, queue depth и oldest-message age; `sync_route_ms` свер�
 | Доступность routing | Доля валидных принятых тикетов, для которых durable routing decision создано успешно | `99,9%` за календарный месяц; alert по быстрому расходу error budget, а не ожидание конца месяца |
 | Latency routing | p95 `sync_route_ms` среди успешно маршрутизированных тикетов | `< 500 мс`; превышение в течение 5 минут — critical |
 | Ограничение LLM | Время от начала provider-вызова до результата либо безопасного fallback | Не более `2 с` на попытку; превышение немедленно завершает попытку fallback-ом и считается timeout |
-| RPO решений | Число committed decisions без соответствующих outbox/audit records | `0`; любое расхождение — critical и запрет автоматического действия |
+| RPO decision/outbox | Число committed decisions без outbox-записи в той же транзакции | `0`; любое расхождение — critical немедленно и запрет автоматического действия |
+| Доставка audit | Число committed decisions старше `5 минут` без audit-записи | `0` при сверке каждую минуту; наличие — critical после истечения окна доставки |
 | RTO routing | Время восстановления routing без зависимости от generation | Не более `15 минут`; incident открывается сразу, 15 минут — предел восстановления, не задержка alert |
+
+Пятиминутное audit-окно допускает нормальную eventual-доставку и retry, но не
+маскирует продолжительный отказ sink; после production-замеров его следует
+пересчитать по фактическому распределению delivery lag.
 
 End-to-end SLO для асинхронного fulfillment пока не установлен: до production-
 замеров queue oldest age является сигналом backpressure, но не называется
@@ -94,8 +99,10 @@ CSAT и reopen и сравниваем с постоянной holdout-груп�
 - Routing availability: warning при расходе месячного error budget быстрее `2×`
   на окне 1 час, critical быстрее `10×` на окне 5 минут.
 - p95 `sync_route_ms > 500 мс` 5 минут — critical по latency SLO.
-- `audit_write_failed > 0` или committed decision без outbox/audit — critical по
-  RPO `0`: автоматические действия закрыты.
+- Committed decision без атомарной outbox-записи — critical немедленно по RPO `0`:
+  автоматические действия закрыты.
+- `audit_write_failed > 0` — warning и retry немедленно; critical поднимается, если
+  минутная сверка находит decision старше `5 минут` без audit-записи.
 - LLM-вызов дольше `2 с` принудительно завершается fallback-ом; timeout rate `> 5%`
   за 10 минут — warning, `> 20%` — incident. Это availability provider, а не
   доступность routing.

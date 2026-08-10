@@ -869,3 +869,155 @@ def test_review_article_with_high_score_cannot_auto_answer(custom_kb):
     assert decision.final_action != "AUTO_RESPONSE", (
         f"автоответ по статье в review при score={max_score_of(event)}: reason={decision.reason}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Пятый прогон: реальная поверхность атаки после расширения KB до 27 статей
+# --------------------------------------------------------------------------- #
+
+
+def test_semantically_irrelevant_kb_hit_cannot_authorize_auto_response():
+    """Высокий lexical score не доказывает, что статья отвечает на вопрос.
+
+    Контрольный запрос действительно относится к KB-HOWTO-214 и проходит весь
+    auto-path. Враждебный запрос сохраняет общую HOWTO-форму, но спрашивает про
+    номер телефона, а не про язык интерфейса.
+    """
+    baseline, baseline_event = run("как изменить язык интерфейса")
+    assert baseline.final_action == "AUTO_RESPONSE", (
+        f"baseline сломан: {baseline.final_action}/{baseline.reason}"
+    )
+    assert baseline.citations == ["KB-HOWTO-214"], (
+        f"baseline нашёл не статью про язык: {baseline.citations}, "
+        f"score={max_score_of(baseline_event)}"
+    )
+
+    text = "как изменить номер телефона в профиле"
+    decision, event = run(text)
+    assert decision.final_action != "AUTO_RESPONSE", (
+        "смыслово нерелевантная статья разрешила автоответ: "
+        f"topic={topic_of(event)} conf={confidence_of(event)} "
+        f"score={max_score_of(event)} citations={decision.citations} "
+        f"answer={decision.answer_text!r}"
+    )
+
+
+def test_paraphrased_duplicate_bank_operation_escalates_despite_safe_tail():
+    """Две операции за один курс — PAYMENT risk вне текущей лексики FIN-001.
+
+    В KB уже есть отдельная статья KB-PAY-514. Контроль с известной policy
+    формулировкой подтверждает, что high-risk путь активен; HOWTO-хвост не должен
+    позволять классификатору и retrieval понизить риск до автоответа.
+    """
+    catalog = kb_catalog()
+    payment_article = catalog.get("KB-PAY-514")
+    assert payment_article is not None, "в KB нет статьи о дублирующейся оплате KB-PAY-514"
+    assert "PAYMENT" in payment_article.get("categories", ""), payment_article
+    assert str(payment_article.get("auto_allowed")).lower() == "false", payment_article
+
+    baseline = pipeline.route(
+        make_ticket("оплата курса продублировалась в истории, как скачать урок")
+    )
+    assert (
+        baseline.policy.route,
+        baseline.policy.risk_type,
+        baseline.policy.policy_rule_id,
+    ) == ("ESCALATE", "FINANCIAL", "FIN-001"), (
+        "baseline с известной финансовой лексикой не включил FIN-001: "
+        f"{baseline.policy}"
+    )
+
+    text = "за один курс в банковской истории теперь две одинаковые операции, как скачать урок"
+    decision, event = run(text)
+    policy_data = as_dict(event.policy)
+    assert decision.final_action == "ESCALATE" and policy_data.get("risk_type") == "FINANCIAL", (
+        "перефразированная дублирующаяся банковская операция не распознана как high-risk: "
+        f"topic={topic_of(event)} conf={confidence_of(event)} "
+        f"policy={policy_data.get('policy_rule_id')}/{policy_data.get('risk_type')} "
+        f"action={decision.final_action} score={max_score_of(event)} "
+        f"citations={decision.citations} answer={decision.answer_text!r}"
+    )
+
+
+def test_meaningful_out_of_distribution_ticket_takes_low_001_path():
+    """UNKNOWN/LOW-001 проверяется вне development-набора явным OOD-входом."""
+    baseline, _ = run("как скачать урок для просмотра без сети")
+    assert baseline.final_action == "AUTO_RESPONSE", (
+        f"baseline сломан: auto-path недоступен ({baseline.final_action}/{baseline.reason})"
+    )
+
+    text = "поддерживается ли экспорт заметок в obsidian"
+    decision, event = run(text)
+    classification = as_dict(event.classification)
+    policy_data = as_dict(event.policy)
+    assert classification.get("topic") == "UNKNOWN", classification
+    assert classification.get("confidence", 1.0) < config.CONF_THRESHOLD, classification
+    assert policy_data.get("policy_rule_id") == "LOW-001", policy_data
+    assert policy_data.get("route") == "ESCALATE", policy_data
+    assert decision.final_action == "ESCALATE", decision
+    assert decision.target_queue == "general", decision
+    assert decision.answer_text is None and decision.citations == [], decision
+    assert not hits_of(event), "LOW-001 не должен запускать retrieval"
+
+
+def test_entire_kb_catalog_satisfies_governance_invariants():
+    """Все 27 статей проверяются независимо от того, попали ли они в eval/retrieval."""
+    paths = sorted(config.KB_DIR.glob("*.md"))
+    catalog = kb_catalog()
+    assert len(paths) == 27, f"ожидалось 27 markdown-статей KB, найдено {len(paths)}"
+    assert len(catalog) == len(paths), (
+        "не у каждой статьи есть уникальный document_id: "
+        f"файлов={len(paths)}, document_id={len(catalog)}"
+    )
+
+    high_risk_topics = {"PAYMENT", "REFUND", "FINANCIAL", "SECURITY", "PRIVACY", "LEGAL"}
+    violations: list[str] = []
+    today = date.today()
+    for doc_id, meta in sorted(catalog.items()):
+        categories = {
+            item.strip()
+            for item in meta.get("categories", "").strip("[]").split(",")
+            if item.strip()
+        }
+        if categories & high_risk_topics and str(meta.get("auto_allowed")).lower() == "true":
+            violations.append(f"{doc_id}: high-risk categories={sorted(categories)} auto_allowed=true")
+        if not meta.get("owner"):
+            violations.append(f"{doc_id}: owner отсутствует")
+        expires_at = meta.get("expires_at")
+        if not expires_at:
+            violations.append(f"{doc_id}: expires_at отсутствует")
+        else:
+            try:
+                if datetime.strptime(expires_at[:10], "%Y-%m-%d").date() < today:
+                    violations.append(f"{doc_id}: expires_at={expires_at} истёк на {today}")
+            except ValueError:
+                violations.append(f"{doc_id}: expires_at={expires_at!r} невалиден")
+        if meta.get("approval_status") != "published":
+            violations.append(f"{doc_id}: approval_status={meta.get('approval_status')!r}")
+
+    assert not violations, "нарушения governance в каталоге KB:\n" + "\n".join(violations)
+
+
+def test_source_selection_is_deterministic_across_twenty_independent_runs():
+    """Близкие score не должны менять citation между независимыми обработками."""
+    text = "Как прикрепить документ к заданию или Где посмотреть результат и состояние модерации"
+    citations: list[tuple[str, ...]] = []
+    top_docs: list[str | None] = []
+    score_pairs: list[tuple[float, float]] = []
+
+    for _ in range(20):
+        decision, event = run(text, key=f"adv:determinism:{uuid.uuid4().hex}")
+        assert decision.final_action == "AUTO_RESPONSE", (
+            f"baseline auto-path сломан: {decision.final_action}/{decision.reason}"
+        )
+        hits = hits_of(event)
+        assert len(hits) >= 2, f"ожидались два конкурирующих источника: {hits}"
+        citations.append(tuple(decision.citations))
+        top_docs.append(hits[0].get("doc_id"))
+        score_pairs.append((hits[0]["score"], hits[1]["score"]))
+
+    assert max(first - second for first, second in score_pairs) < 0.01, (
+        f"кандидаты больше не близки по score: {score_pairs[0]}"
+    )
+    assert len(set(top_docs)) == 1, f"top document меняется: {top_docs}"
+    assert len(set(citations)) == 1, f"citations меняются между повторами: {citations}"
