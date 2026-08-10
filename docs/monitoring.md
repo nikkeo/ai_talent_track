@@ -1,5 +1,7 @@
 # Мониторинг
 
+> **Audience: For AI**
+
 ## Технический контур
 
 Основной источник — `AuditEvent`: `event_type`, `ts`, `correlation_id`, `sequence`,

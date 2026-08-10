@@ -21,9 +21,9 @@ RETRIEVAL_TOP_K = 5
 TOPIC_BOOST = 1.15
 
 VERSIONS = {
-    "classifier": "tfidf-lr-0.1",
-    "policy": "2026.08.1",
-    "kb_index": "kb-0.1",
+    "classifier": "tfidf-lr-0.2",
+    "policy": "2026.08.2",
+    "kb_index": "kb-0.2",
     "prompt": "draft-v1",
 }
 
@@ -48,6 +48,18 @@ def _sha8(path: Path) -> str:
         return "missing"
 
 
+def _dir_sha8(path: Path, pattern: str = "*.md") -> str:
+    """Версия содержимого каталога: важно не число файлов, а их содержимое."""
+    digest = hashlib.sha256()
+    try:
+        for item in sorted(path.glob(pattern)):
+            digest.update(item.name.encode())
+            digest.update(item.read_bytes())
+    except OSError:
+        return "missing"
+    return digest.hexdigest()[:8]
+
+
 def runtime_versions(llm_mode: str) -> dict:
     """Полный снимок версий для audit-события: почему два одинаковых тикета
     получили разные решения после правки KB, порогов или датасета."""
@@ -55,5 +67,8 @@ def runtime_versions(llm_mode: str) -> dict:
         **VERSIONS,
         "config": _sha8(Path(__file__)),
         "training_data": _sha8(TRAIN_TICKETS),
+        # Ручные строки версий выше легко забыть поднять; хеши меняются сами.
+        "policy_rules": _sha8(Path(__file__).with_name("policy.py")),
+        "kb_content": _dir_sha8(KB_DIR),
         "llm_mode": llm_mode,
     }
