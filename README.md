@@ -28,12 +28,12 @@ _Явный список._
 
 ## Документация
 
-- [docs/product.md](docs/product.md) — продуктовые решения и расчёт эффекта
+- [docs/product.md](docs/product.md) — продуктовые решения и расчёт эффекта (набросок)
 - [docs/architecture.md](docs/architecture.md) — целевая архитектура
 - [docs/ml.md](docs/ml.md) — ML/LLM-решения и валидация качества
 - [docs/monitoring.md](docs/monitoring.md) — наблюдаемость в проде
 - [docs/risks-and-ops.md](docs/risks-and-ops.md) — нагрузка, надёжность, приватность
 - [docs/eval_report.md](docs/eval_report.md) — offline-метрики PoC
-- [docs/WORKLOG.md](docs/WORKLOG.md) — управление таймбоксом
+- [WORKLOG.md](WORKLOG.md) — управление таймбоксом (набросок)
 - [AI_USAGE.md](AI_USAGE.md) — как использовался AI
 - [SELF_REVIEW.md](SELF_REVIEW.md) — самокритика решения
