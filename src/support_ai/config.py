@@ -10,6 +10,7 @@ RELEVANCE_THRESHOLD = 0.35
 # в связке с policy — см. таблицу решений в DEV_PLAN §9.
 AUTO_ALLOWLIST = {"HOWTO", "STATUS", "TECHNICAL"}
 MAX_TICKET_CHARS = 4096
+MAX_ANSWER_CHARS = 1200      # единый лимит; per-channel — вопрос целевой архитектуры
 LLM_TIMEOUT_S = 2.0
 CB_FAILURES = 3
 CB_COOLDOWN_S = 30.0

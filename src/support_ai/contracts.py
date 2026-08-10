@@ -61,7 +61,13 @@ class SanitizedTicket:
     language: str
     redacted_text: str
     found_pii_types: list[str] = field(default_factory=list)
-    safe_metadata: dict = field(default_factory=dict)
+    # Явные поля вместо свободного dict: в произвольный словарь рано или поздно
+    # скопируют email, телефон или имя, и PII снова окажется за границей очереди.
+    product: str | None = None
+    app_version: str | None = None
+    platform: str | None = None
+    locale: str | None = None
+    incident_id: str | None = None
 
 
 @dataclass
@@ -160,7 +166,9 @@ class Decision:
 class AuditEvent:
     event_type: AuditEventType
     schema_version: str
-    sequence: int              # порядковый номер события в рамках correlation_id
+    # монотонно возрастает внутри correlation_id. В PoC событий ровно два,
+    # в целевой модели их больше: attempt started / failed / retried / completed.
+    sequence: int
     correlation_id: str        # весь жизненный цикл тикета
     attempt_id: str            # конкретная попытка обработки
     ticket_id: str
@@ -172,7 +180,10 @@ class AuditEvent:
     retrieval: dict | None
     draft: dict | None
     validation: dict | None
-    decision: dict
+    # Раздельные поля вместо одного decision: в routing-событии и в fulfillment-событии
+    # туда попадали разные по смыслу объекты, и схема была неоднозначной.
+    routing_decision: dict | None
+    fulfillment_decision: dict | None
     latency_ms: dict
 
 
@@ -186,7 +197,20 @@ class RoutingOutcome:
     policy: PolicyDecision
 
 
+@dataclass
+class LLMResult:
+    """Не только текст: без usage-полей раздел про контроль стоимости LLM
+    в monitoring.md нечем подтвердить. Mock возвращает нули."""
+    text: str
+    provider: str
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: float = 0.0
+    request_id: str | None = None
+
+
 class LLM(Protocol):
     name: str
 
-    def complete(self, system: str, user: str, timeout_s: float) -> str: ...
+    def complete(self, system: str, user: str, timeout_s: float) -> LLMResult: ...

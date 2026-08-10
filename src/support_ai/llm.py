@@ -3,7 +3,7 @@
 По умолчанию сети нет: демо и тесты работают без ключей.
 """
 
-from .contracts import LLM
+from .contracts import LLM, LLMResult
 
 
 class MockLLM:
@@ -18,7 +18,7 @@ class MockLLM:
     def __init__(self) -> None:
         self.last_prompt: str | None = None
 
-    def complete(self, system: str, user: str, timeout_s: float) -> str:
+    def complete(self, system: str, user: str, timeout_s: float) -> LLMResult:
         raise NotImplementedError("Agent B, блок 2")
 
 
@@ -27,7 +27,7 @@ class FailingLLM:
 
     name = "fail"
 
-    def complete(self, system: str, user: str, timeout_s: float) -> str:
+    def complete(self, system: str, user: str, timeout_s: float) -> LLMResult:
         raise TimeoutError("LLM unavailable")
 
 
