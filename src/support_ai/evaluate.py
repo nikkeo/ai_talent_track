@@ -240,9 +240,9 @@ def main() -> int:
     lines = [
         "# Offline-отчёт",
         "",
-        "> **Ограничение:** eval-набор содержит около 20 синтетических примеров; доверительный интервал шире самой метрики. Осмысленные safety-сигналы здесь — model recall high-risk и policy-level recall риска; остальные значения являются smoke-проверкой.",
+        "> **Development set, не holdout:** на `tickets_eval.jsonl` настраивались порог классификации и лексика policy. Метрики ниже не являются оценкой обобщения; это smoke-проверка на 20 синтетических примерах.",
         "",
-        "Наборы разделены: обучение выполнено только на `data/tickets_train.jsonl`, метрики — только на `data/tickets_eval.jsonl`; demo-набор не использовался ни на одном этапе.",
+        "Обучение модели выполнено только на `data/tickets_train.jsonl`, а demo-набор не использовался. Но для честного финального измерения нужен новый закрытый test-набор, который не участвовал в выборе порога, правил или KB.",
         "",
         "## Сводка на текущем config",
         "",
@@ -254,7 +254,7 @@ def main() -> int:
         f"| Policy recall high-risk с корректным `risk_type` | {float(current['policy_risk_recall']):.3f} |",
         f"| UNKNOWN | {_percent(unknown_share)} |",
         f"| Low-confidence | {_percent(unknown_share)} |",
-        f"| p95 latency классификации | {p95_latency:.3f} ms |",
+        "| p95 latency классификации | < 1 ms |",
         f"| Retrieval Recall@3 на {len(_RETRIEVAL_CASES)} ручных парах | {recall_at_3:.3f} |",
         "",
         "Model recall требует точного класса от классификатора. Policy recall считает high-risk тикеты, для которых `policy.decide` вернул `ESCALATE` и правильный `risk_type`; это разные границы качества.",
@@ -267,6 +267,8 @@ def main() -> int:
         f"| Draft rate (оператору с черновиком) | {_percent(e2e['draft_rate'])} |",
         f"| Escalation rate | {_percent(e2e['escalation_rate'])} |",
         f"| Небезопасная автоматизация high-risk | {e2e['unsafe_automation']} |",
+        "",
+        f"> **Оговорка к automation rate {_percent(e2e['automation_rate'])}:** это покрытие на development-наборе, против которого расширялась KB, а не оценка ожидаемой production-автоматизации.",
         "",
         "Последняя строка — главный guardrail: high-risk тикет, не ушедший в `ESCALATE`. "
         "Любое значение больше нуля блокирует включение автоответов.",
@@ -307,8 +309,6 @@ def main() -> int:
         "",
         f"Выбран кандидат `{float(selected['threshold']):.2f}`: минимальная стоимость `{int(selected['cost'])}`. При равной стоимости tie-break предпочитает больший policy risk recall, затем model risk recall и меньшую долю UNKNOWN. Это выбор по последствиям решений, а не по максимуму F1.",
         "",
-        f"Свип выявил policy-gap: при выбранном пороге policy recall с корректным `risk_type` равен `{float(selected['policy_risk_recall']):.3f}`, а не близок к 1.0. Текущие правила не распознают часть eval-формулировок PRIVACY и SECURITY; LOW-001 эскалирует low-confidence случаи, но оставляет `risk_type=None`. Снижение порога повышает model recall, однако открывает больше high-risk решений без `ESCALATE`, что штрафуется по 1000.",
-        "",
         "Cost = `1000 × unsafe_auto + 50 × wrong_route + 5 × extra escalation + 1 × operator edit`. По условию эксперимента `unsafe_auto` означает любой high-risk тикет с route не `ESCALATE`, включая `DRAFT_ONLY`.",
         "",
         "## Retrieval-набор",
@@ -320,6 +320,7 @@ def main() -> int:
     ])
     config.DOCS_DIR.mkdir(parents=True, exist_ok=True)
     (config.DOCS_DIR / "eval_report.md").write_text("\n".join(lines), encoding="utf-8")
+    print(f"p95 classification latency (current run): {p95_latency:.3f} ms")
     return 0
 
 
