@@ -3,30 +3,40 @@
 > **Audience: For everyone**
 
 Структура очередей, outbox и целевые переходы принадлежат
-[architecture.md](architecture.md). Здесь описаны только рабочее поведение и
-пределы текущего PoC.
+[architecture.md](architecture.md), численные предпосылки и расчёт пула workers —
+единственной [таблице capacity planning](architecture.md#capacity-planning).
+Здесь эти расчёты не повторяются: раздел описывает рабочее поведение, приоритеты и
+пределы текущего PoC и целевой системы.
 
 ## Высокая нагрузка и надёжность
 
-1. **Профиль нагрузки и граница контуров.** 200 000 тикетов/сутки — около 2,3 RPS
-   в среднем; пик 20 000 за 10 минут — около 33 RPS, то есть ×14. В
-   `pipeline.route()` синхронны только normalize, redaction, classification,
-   policy и запись `ROUTING_DECIDED`: пользователь быстро получает безопасный
-   маршрут. Retrieval, generation и validation находятся в `fulfill()`; в PoC он
-   вызывается inline, его фактический вынос в worker **спроектирован, не реализован**.
+1. **Пик не расширяет синхронную границу.** При нагрузке из capacity-плана
+   `pipeline.route()` по-прежнему выполняет только normalize, redaction,
+   classification, policy и запись `ROUTING_DECIDED`; retrieval, generation и
+   validation не задерживают безопасный маршрут. В PoC `fulfill()` вызывается
+   inline, поэтому изоляция контуров и рассчитанный пул workers **спроектированы,
+   не реализованы** и не подтверждены нагрузочным тестом.
 
-2. **Отказы не превращаются в автоматическое действие.** Недоступная policy даёт
-   `POLICY_UNAVAILABLE`, retrieval — `NO_RELIABLE_CONTEXT`, а отказ LLM в
-   `generator.make_draft()` даёт детерминированный шаблон и максимум
-   `DRAFT_FOR_OPERATOR`. `Draft.degraded`, провал validation и отсутствие статьи
-   также запрещают `AUTO_RESPONSE`. Circuit breaker **не реализован**; безопасный
-   fallback работает для каждого запроса независимо.
+2. **Медленная или недоступная LLM не удерживает routing.** Пул generation имеет
+   жёсткий предел concurrency; вызов LLM ограничен целевым timeout `2 с`, после
+   которого используется детерминированный шаблон и максимум
+   `DRAFT_FOR_OPERATOR`. Недоступная policy даёт `POLICY_UNAVAILABLE`, retrieval —
+   `NO_RELIABLE_CONTEXT`; `Draft.degraded`, провал validation и отсутствие статьи
+   также запрещают `AUTO_RESPONSE`. Circuit breaker целевой системы прекращает
+   новые обращения к медленному provider, сохраняя шаблоны и Human Queue. В PoC
+   breaker **не реализован**, fallback работает для каждого запроса независимо.
 
-3. **Backpressure.** Для production спроектированы, но не реализованы: лимит
-   параллельных LLM-вызовов, приоритет incident/high-priority сообщений, отключение
-   необязательной генерации при перегрузке, заранее утверждённые incident-шаблоны и
-   дедупликация массового одинакового всплеска. High-risk и low-confidence уже
-   short-circuit до retrieval, поэтому не занимают дорогую очередь генерации.
+3. **Рост очереди включает backpressure, а не безграничный параллелизм.** Приоритет
+   получают запись routing-решения и передача человеку: high-risk,
+   low-confidence и `UNKNOWN` short-circuit до retrieval и не занимают generation
+   queue. Затем известный массовый incident дедуплицируется и обслуживается заранее
+   утверждённым шаблоном. При дальнейшем росте отключаются необязательные LLM-drafts
+   и новые auto-candidate направляются оператору; лимит provider не повышается
+   автоматически. Задание, чей TTL относительно SLA истёк, не может породить
+   запоздалый автоответ и уходит в Human Queue либо DLQ для разбора. Queue depth и
+   oldest age запускают этот режим по операционным порогам из
+   [monitoring.md](monitoring.md). Эти механизмы production **спроектированы, не
+   реализованы**.
 
 4. **Идемпотентность и восстановление.** `pipeline.process()` хранит первое решение
    по обязательному `idempotency_key` в in-memory словаре: повтор не вызывает LLM
