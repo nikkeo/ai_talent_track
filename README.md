@@ -75,3 +75,4 @@ make eval     # пересобирает docs/eval_report.md
 - [SELF_REVIEW.md](SELF_REVIEW.md) — слабые места и критерии остановки проекта
 - [docs/product.md](docs/product.md) — расчёт эффекта и метрики (необязательный набросок, трек AI Product)
 - [WORKLOG.md](WORKLOG.md) — управление таймбоксом и вырезанный scope (необязательный набросок)
+- [timeline.md](timeline.md) — хронология четырёх часов по этапам
