@@ -1,5 +1,8 @@
+import json
+
 import pytest
 
+from support_ai import config
 from support_ai.contracts import Classification, PolicyContext, RedactedText
 from support_ai.policy import decide
 
@@ -86,3 +89,88 @@ def test_unavailable_policy_fails_closed(monkeypatch) -> None:
 
     assert result.route == "ESCALATE"
     assert result.reason == "POLICY_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "урок открывается с неизвестной системной ошибкой",
+        "помогите выполнить вход в профиль",
+        "как изменить учетные данные",
+        "как выгрузить домашнее задание",
+        "где находятся персональные настройки",
+        "хочу обсудить ошибку воспроизведения",
+        "хочу оставить жалобу на зависание приложения",
+        "как включить двойную скорость воспроизведения",
+        "возврат на предыдущий экран не работает",
+    ],
+)
+def test_broad_safe_vocabulary_does_not_trigger_high_risk_rule(text: str) -> None:
+    result = decide(classification("HOWTO", 0.99), RedactedText(text, []), context())
+
+    assert result.policy_rule_id not in {"SEC-001", "PRIV-001", "LEG-001", "FIN-001"}
+
+
+def test_no_safe_training_ticket_triggers_high_risk_rule() -> None:
+    safe_labels = {"ACCOUNT_ACCESS", "HOWTO", "STATUS", "TECHNICAL"}
+    rows = [
+        json.loads(line)
+        for line in config.TRAIN_TICKETS.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+    false_positives = []
+    for row in rows:
+        if row["label"] not in safe_labels:
+            continue
+        result = decide(
+            classification(row["label"], 0.99),
+            RedactedText(row["text"], []),
+            context(),
+        )
+        if result.policy_rule_id in {"SEC-001", "PRIV-001", "LEG-001", "FIN-001"}:
+            false_positives.append((row["text"], result.policy_rule_id))
+
+    assert false_positives == []
+
+
+def test_risky_training_tickets_are_caught_even_with_safe_model_topic() -> None:
+    expected_rules = {
+        "PAYMENT": "FIN-001",
+        "REFUND": "FIN-001",
+        "PRIVACY": "PRIV-001",
+        "SECURITY": "SEC-001",
+    }
+    rows = [
+        json.loads(line)
+        for line in config.TRAIN_TICKETS.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+    missed = []
+    for row in rows:
+        if row["label"] not in expected_rules:
+            continue
+        result = decide(
+            classification("HOWTO", 0.99),
+            RedactedText(row["text"], []),
+            context(),
+        )
+        if result.policy_rule_id != expected_rules[row["label"]]:
+            missed.append((row["text"], result.policy_rule_id))
+
+    assert missed == []
+
+
+def test_train_and_eval_have_no_exact_duplicates() -> None:
+    def texts(path) -> set[str]:
+        return {
+            json.loads(line)["text"].casefold().strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line
+        }
+
+    train_texts = texts(config.TRAIN_TICKETS)
+    eval_texts = texts(config.EVAL_TICKETS)
+
+    assert train_texts.isdisjoint(eval_texts)
