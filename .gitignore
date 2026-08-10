@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime artifacts
+poc/reports/audit_log.jsonl
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Исходные материалы задания и рабочие планы — не входят в сдаваемый репозиторий
+task.txt
+general-system-design-guide.md
+support-ticket-automation-design.md
+DEV_PLAN.md
+LEAD_SCAFFOLD.md
+AGENT_A_BRIEF.md
+AGENT_B_BRIEF.md
