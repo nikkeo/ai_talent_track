@@ -72,8 +72,9 @@ def main() -> int:
         )
         if enabled
     )
-    llm_mode = "fail" if args.fail_llm else "mock"
     for ticket in _tickets(args):
+        # S3 демонстрирует локальный отказ LLM даже в обычном six-scenario demo.
+        llm_mode = "fail" if args.fail_llm or (args.demo and ticket.ticket_id == "S3") else "mock"
         _print_ticket(ticket, llm_mode=llm_mode, faults=faults)
     return 0
 
