@@ -9,7 +9,7 @@ from .config import MAX_TICKET_CHARS
 
 _HTML_TAG = re.compile(r"<[^>]*>")
 _REPLY_MARKER = re.compile(
-    r"^(?:>+|On\s+.+\s+wrote:|-----Original Message-----)\s*$",
+    r"^(?:>+.*|On\s+.+\s+wrote:|-----Original Message-----)\s*$",
     re.IGNORECASE,
 )
 
