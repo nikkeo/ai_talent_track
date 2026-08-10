@@ -2,22 +2,7 @@
 
 > **Audience: For AI**
 
-## Реализовано и спроектировано
-
-| Возможность | PoC | Целевая система |
-|---|---|---|
-| Приём и нормализация | Локальный Python ingress | Адаптеры каналов с аутентификацией и rate limit |
-| Защита PII | Redaction до границы очереди | DLP, шифрование и отдельный PII vault |
-| Классификация | TF-IDF и Logistic Regression | Версионируемый model service с canary rollout |
-| Policy | Детерминированные fail-closed правила | Версионируемый policy service с four-eyes review |
-| Асинхронность | `fulfill` вызывается inline | Durable queue, retry scheduler и DLQ |
-| Идемпотентность | In-memory словарь решений | Decision Store с unique index по `idempotency_key` |
-| Аудит | Два события в JSONL | Append-only журнал с контролем целостности и schema registry |
-| База знаний | Markdown и ленивый TF-IDF индекс | CMS, approval workflow и обновляемый hybrid index |
-| Генерация | Детерминированный mock и template fallback | Внешняя LLM за rate limiter и circuit breaker |
-| Доставка | Решение и текст без реального dispatcher | Второй outbox, idempotent dispatcher и delivery events |
-
-Это разграничение принципиально: ниже проектные свойства не выдаются за гарантии текущего кода.
+Одна фраза, которую описывает вся схема: быстрая модель предлагает тему, детерминированная policy ограничивает действие, retrieval даёт основание, validator разрешает автоответ, всё остальное уходит человеку.
 
 ## Схема
 
@@ -49,107 +34,119 @@ flowchart LR
     HQ --> FB[Feedback Store]
 ```
 
-## Компоненты и поток данных
+## Реализовано и спроектировано
 
-| Компонент | Зачем он существует |
-|---|---|
-| Ingress и normalizer | Создают единый контракт и ключ идемпотентности для разных каналов. |
-| PII redaction | Закрывает типом путь передачи исходных персональных данных за routing-контур. |
-| Classifier | Даёт дешёвый, быстрый и воспроизводимый сигнал темы. |
-| Policy | Сохраняет бизнес-риск детерминированным и независимым от вероятностных моделей. |
-| Retrieval | Привязывает ответ к управляемому знанию и возвращает governance-метаданные. |
-| Draft generator | Создаёт только текстовый черновик и безопасно деградирует без LLM. |
-| Validator | Единолично выдаёт право на auto-response после grounding, governance и safety-проверок. |
-| Decision Store и outbox | Делают решение идемпотентным и не дают потерять последующее задание. |
-| Audit Log | Позволяет восстановить причины решения, версии и попытки без роли operational state. |
-| Dispatcher и Human Queue | Разделяют надёжную доставку и обработку, требующую человеческого решения. |
+Построчное сравнение PoC и целевой системы — в [таблице README](../README.md#что-реализовано-а-что-спроектировано); здесь оно не дублируется. Правило для всего документа: проектные свойства нигде не выдаются за гарантии текущего кода, и каждое такое место помечено явно.
 
-Поток начинается с канального события. Ingress проверяет обязательный `idempotency_key`, сохраняет исходный тикет в защищённый Ticket Store, нормализует и маскирует PII. Classifier возвращает тему, confidence и top-3, затем policy либо немедленно направляет риск оператору, либо разрешает асинхронное наполнение. Routing decision и fulfillment job фиксируются одной транзакцией.
+## Два контура
 
-Worker получает только `SanitizedTicket`, ищет контекст, формирует draft и передаёт его validator. Низкая релевантность прекращает генерацию. Validator сверяет citation с найденными hits, `auto_allowed`, публикацию, owner, срок действия, PII, обещания и лимит `1200` символов. Успех для `AUTO_CANDIDATE` создаёт финальное решение и delivery job; любой запрет создаёт operator job. LLM создаёт только текстовый draft и никогда не выполняет возврат средств, блокировку аккаунта или изменение подписки.
+**Синхронный, бюджет < 500 мс:** ingress → PII → classify → policy → persist audit → route.
+Retrieval и LLM в него не входят, поэтому их отказ не задерживает маршрутизацию к человеку. PoC пишет факт в `RoutingDecision.sync_route_ms`: максимум по шести сценариям — `8.8 ms` на холодном S1, остальные ≤ `0.3 ms`. Это smoke-замер одной машины, не production SLA.
 
-## Синхронный и асинхронный контуры
+**Асинхронный:** queue → retrieval → draft → validate → final outbox.
+В PoC вызывается inline и виден только через `FulfillmentStatus`. Задание на human routing всегда приоритетнее генерации: тикет не ждёт освобождения LLM-квоты, чтобы попасть оператору.
 
-Синхронная граница: ingress → PII → classify → policy → persist audit → route. Её бюджет — менее 500 мс. PoC пишет фактическое значение в `RoutingDecision.sync_route_ms`; в локальном интеграционном прогоне 2026-08-10 максимум шести сценариев составил `8.8 ms` на холодном S1, остальные — не более `0.3 ms`. Это smoke-замер одной машины, не production SLA. Retrieval и LLM не входят в этот бюджет, поэтому их отказ не задерживает первичную операторскую маршрутизацию.
+Ключевые свойства потока:
 
-Асинхронная граница: queue → retrieval → draft → validate → final outbox. В PoC этот контур вызывается inline и виден только через `FulfillmentStatus`; durable queue и dispatcher спроектированы. Приоритет задания на human routing всегда выше генерации: тикет не ждёт освобождения LLM-квоты, чтобы попасть оператору.
+- Ingress требует `idempotency_key`, кладёт исходный текст в защищённый Ticket Store и маскирует PII до всего остального.
+- Routing decision и fulfillment job фиксируются одной транзакцией.
+- Worker получает только `SanitizedTicket` — исходный текст за границу очереди не проходит.
+- Validator единолично выдаёт право на автоответ: citation из реальных hits, `auto_allowed`, публикация, owner, срок действия, отсутствие PII и обещаний, лимит 1200 символов.
+- LLM создаёт только текстовый черновик и никогда не выполняет возврат средств, блокировку аккаунта или изменение подписки.
 
 ## Capacity planning
 
 | Параметр | Расчёт |
 |---|---|
-| Normal RPS | `200 000 / 86 400 = 2,31 RPS` |
-| Peak RPS | `20 000 / 600 = 33,3 RPS`, то есть примерно `×14` к среднему |
-| Доля auto-candidate | `37%` — допущение для capacity planning; не равна automation rate из development eval |
-| p95 LLM latency | Не измерена. Для верхней оценки используется timeout `config.LLM_TIMEOUT_S = 2 с`; измеренный classification p95 из [eval report](eval_report.md) — `< 1 ms` |
-| Concurrency воркеров в пик | `ceil(33,3 × 0,37 × 2) = ceil(24,64) = 25` одновременных LLM-вызовов |
-| Разбор накопившейся очереди | Если все `20 000 × 0,37 = 7 400` generation jobs уже накопились: `7 400 / (25 / 2) = 592 с ≈ 9,9 мин`. При непрерывной обработке за пик поступит `7 400`, а идеальная ёмкость составит `(25 / 2) × 600 = 7 500` jobs: запас всего `(7 500 − 7 400) / 7 400 = 1,35%`. Retrieval, validation и служебные накладные расходы не учтены, поэтому эксплуатационного запаса нет: очередь разбирается за 10 минут только в идеальных условиях, а любая деградация retrieval выводит обработку за этот SLA |
+| Normal RPS | `200 000 / 86 400 = 2,31` |
+| Peak RPS | `20 000 / 600 = 33,3`, примерно `×14` к среднему |
+| Доля auto-candidate | `37%` — допущение для планирования, не automation rate из eval |
+| p95 LLM latency | не измерена; верхняя оценка — timeout `2 с` |
+| Concurrency в пик | `ceil(33,3 × 0,37 × 2) = 25` одновременных вызовов |
+| Ёмкость за пик | `(25 / 2) × 600 = 7 500` заданий против `7 400` входящих |
+| **Запас** | **`1,35%`, то есть эксплуатационного запаса нет** |
 
-Признание отсутствия запаса требует решения, а не только констатации. Выбранное: пул рассчитывается не на пиковую нагрузку, а на целевую загрузку 60% от неё, то есть примерно 42 одновременных вызова вместо 25; сверх этого действует жёсткий бюджет concurrency, и при его исчерпании generation отключается в пользу утверждённых incident-шаблонов. Причина такого выбора: throttling провайдера, retry, latency retrieval и валидации не входят в расчёт выше, а именно они съедают запас первыми. Отказ от generation на пике безопаснее, чем растущая очередь: маршрутизация и человеческий контур продолжают работать, а пользователь получает шаблон вместо ожидания.
+Retrieval, валидация и служебные расходы в расчёт не входят, а съедают запас первыми. Поэтому решение, а не только констатация: **пул считается на 60% целевой загрузки — около 42 вызовов вместо 25**, сверх этого действует жёсткий бюджет concurrency, при исчерпании генерация отключается в пользу утверждённых incident-шаблонов. Отказ от генерации на пике безопаснее растущей очереди: маршрутизация и человеческий контур продолжают работать.
 
-## Incident mode и дедупликация
+## Incident mode
 
-Детектор всплеска агрегирует входящие обращения по теме; при массовом росте одной темы создаётся `incident_id`. Нормализованные дубликаты группируются под одним incident, а повторные события с тем же `idempotency_key` получают уже сохранённое решение. Для известного incident retrieval и свободная генерация заменяются заранее утверждённым incident-шаблоном. Пул генерации имеет жёсткий лимит параллельности, тогда как policy и постановка в Human Queue сохраняют приоритет и не ждут LLM. Конкретные пороги, backpressure и поведение под нагрузкой описаны в [рисках и эксплуатации](risks-and-ops.md).
+- Детектор всплеска агрегирует обращения по теме; при массовом росте создаётся `incident_id`.
+- Нормализованные дубликаты группируются под одним инцидентом, повтор по `idempotency_key` получает сохранённое решение.
+- Для известного инцидента retrieval и свободная генерация заменяются заранее утверждённым шаблоном.
+- Policy и постановка в Human Queue приоритета не теряют и LLM не ждут.
 
-Полная целевая машина состояний:
+Пороги, backpressure и поведение под нагрузкой — в [рисках и эксплуатации](risks-and-ops.md).
+
+## Состояния
+
+В коде PoC живут только наблюдаемые `RoutingStatus` и `FulfillmentStatus`. Целевая машина шире; ключевые переходы и их владельцы:
 
 | Из | В | Владелец перехода |
 |---|---|---|
-| `RECEIVED` | `ROUTED` | Routing orchestrator после policy и первого outbox commit |
-| `ROUTED` | `NEEDS_HUMAN` | Policy adapter для запретного или неопределённого случая |
-| `ROUTED` | `QUEUED_FOR_FULFILLMENT` | Routing outbox publisher |
-| `QUEUED_FOR_FULFILLMENT` | `FULFILLING` | Fulfillment worker после lease задания |
-| `FULFILLING` | `VALIDATING` | Draft generator после template или LLM draft |
-| `FULFILLING` | `NEEDS_HUMAN` | Fulfillment worker при отсутствии надёжного контекста |
-| `FULFILLING` | `FAILED_RETRYABLE` | Fulfillment worker при временной инфраструктурной ошибке |
-| `VALIDATING` | `PENDING_DELIVERY` | Validator и транзакция финального outbox |
-| `VALIDATING` | `NEEDS_HUMAN` | Validator при любой непройденной проверке |
-| `PENDING_DELIVERY` | `COMPLETED` | Response Dispatcher после подтверждения канала |
-| `PENDING_DELIVERY` | `FAILED_RETRYABLE` | Response Dispatcher при временном отказе канала |
-| `FAILED_RETRYABLE` | `QUEUED_FOR_FULFILLMENT` | Retry scheduler в пределах TTL и лимита попыток |
-| `FAILED_RETRYABLE` | `FAILED_FINAL` | Retry scheduler после исчерпания попыток или TTL |
-| `NEEDS_HUMAN` | `COMPLETED` | Ticketing adapter после решения оператора |
+| `RECEIVED` | `ROUTED` | routing orchestrator после policy и commit первого outbox |
+| `ROUTED` | `QUEUED_FOR_FULFILLMENT` | routing outbox publisher |
+| `FULFILLING` | `VALIDATING` | draft generator после template или LLM |
+| `VALIDATING` | `PENDING_DELIVERY` \| `NEEDS_HUMAN` | validator: успех либо любая непройденная проверка |
+| `PENDING_DELIVERY` | `COMPLETED` \| `FAILED_RETRYABLE` | dispatcher по ответу канала |
+| `FAILED_RETRYABLE` | `QUEUED_FOR_FULFILLMENT` \| `FAILED_FINAL` | retry scheduler в пределах TTL и лимита попыток |
 
-В коде PoC существуют лишь наблюдаемые `RoutingStatus` и `FulfillmentStatus`; полная машина — target design. У событий общий `correlation_id`, а `sequence` монотонно растёт внутри него. Новый retry получает новый `attempt_id`. На попытку допустимо больше двух событий: started, failed, retried и completed. Формулировка «ровно два события» относится только к упрощённому PoC с `ROUTING_DECIDED` и `FULFILLMENT_COMPLETED`.
+Любое состояние может уйти в `NEEDS_HUMAN` — это и есть fail-closed. У событий общий `correlation_id`, `sequence` монотонно растёт внутри него, новый retry получает новый `attempt_id`. «Ровно два события» относится только к упрощённому PoC.
 
-## Граница Decision Store / outbox / audit sink
+## Хранилища
 
-| Хранилище | Содержимое | Source of truth | Retention | PII | Консистентность |
-|---|---|---|---|---|---|
-| Ticket Store | Исходный текст, канал, customer reference, encrypted metadata | Да, для исходного обращения | По договору и политике удаления, например 1 год | Да | Strong write; чтение по least privilege |
-| Decision Store | Текущее routing/final state и `idempotency_key` | Да, для состояния и дедупликации; unique index по `idempotency_key` | Срок тикета плюс окно разбирательств | Только ссылки и маскированные данные | ACID |
-| Routing и delivery outbox | Задания на fulfillment, доставку или оператора | Нет; производны от решения | До подтверждённой публикации плюс окно повторов | Только ссылки и маскированные данные | Пишутся одной ACID-транзакцией с соответствующим решением; publish eventual |
-| Immutable Audit Sink | Версии, причины, метрики, transitions и attempts | Нет: не используется ни для state, ни для dedupe, ни для повторной публикации | По требованиям аудита, например 3 года | Нет исходного текста; маски минимизируются | Только append, последовательность на `correlation_id` |
-| KB CMS и Index | Статьи, owner, approval, expiry, векторы и lexical index | CMS для контента; индекс производный | История версий без бессрочного serving старого документа | Нет | CMS strong; индекс eventual и версионирован |
-| Feedback и Labeling Store | Принятие draft, diff, итоговая категория, reopen, CSAT, reject reason | Да, для обучающих labels после review | По циклу обучения и privacy policy | Псевдонимизированные признаки | Append и периодические immutable snapshots |
+| Хранилище | Source of truth | Retention | PII | Консистентность |
+|---|---|---|---|---|
+| Ticket Store | да, для исходного обращения | по политике удаления, напр. 1 год | да | strong write, чтение по least privilege |
+| Decision Store | да, для состояния и дедупликации | срок тикета + окно разбирательств | только ссылки и маски | ACID, unique index по `idempotency_key` |
+| Routing и delivery outbox | нет, производны от решения | до подтверждённой публикации | только ссылки и маски | одна ACID-транзакция с решением, publish eventual |
+| Immutable Audit Sink | нет: ни state, ни dedupe | по требованиям аудита, напр. 3 года | без исходного текста | append-only, порядок по `correlation_id` |
+| KB CMS и Index | CMS для контента, индекс производный | история версий | нет | CMS strong, индекс eventual |
+| Feedback и Labeling Store | да, для labels после review | по циклу обучения | псевдонимизировано | append + immutable snapshots |
 
-В целевой системе Decision Store и соответствующая outbox-запись коммитятся атомарно; audit sink получает неизменяемую копию события отдельно. В PoC все три роли вырождены в один JSONL без транзакционных границ; process-local in-memory словарь лишь имитирует дедупликацию и теряется при рестарте.
+**Границу нельзя размывать:** Decision Store и outbox коммитятся атомарно, audit sink получает копию отдельно. В PoC все три роли вырождены в один JSONL, а дедупликация — словарь в памяти, теряемый при рестарте.
 
-## Интеграции, очереди и два outbox
+## Интеграции и очереди
 
-| Интеграция | Timeout и retry | Идемпотентность | Поведение при отказе |
+| Интеграция | Timeout и retry | Идемпотентность | При отказе |
 |---|---|---|---|
-| Входные каналы | Target: быстрый ack до 500 мс, повтор по contract канала | `channel + external_ticket_id + event_version` | Дубликат возвращает сохранённое решение; невалидное событие в quarantine |
-| Ticketing API и Human Queue | Target: 2 с, exponential backoff, максимум 3 попытки | Stable operator-job key | Временная ошибка в retry queue, затем DLQ; routing к человеку не зависит от LLM |
-| LLM API | В PoC `LLM_TIMEOUT_S = 2.0`; target — максимум 2 короткие попытки в пределах job TTL | Request key на attempt и сохранённый draft | Timeout, rate limit или circuit open дают approved template либо оператора |
-| Support Channel delivery | Target: 2 с, exponential backoff, максимум 3 попытки | Stable delivery key и dedupe у dispatcher | Retry до TTL относительно SLA, затем `DELIVERY_FAILED` и оператор |
+| Входные каналы | ack ≤ 500 мс, повтор по контракту канала | `channel + external_ticket_id + event_version` | дубликат получает сохранённое решение |
+| Ticketing и Human Queue | 2 с, backoff, до 3 попыток | stable operator-job key | retry queue → DLQ; от LLM не зависит |
+| LLM API | `2 с`, максимум 2 попытки в пределах TTL | ключ на попытку, сохранённый draft | approved template либо оператор |
+| Доставка в канал | 2 с, backoff, до 3 попыток | stable delivery key + dedupe | retry до TTL, затем `DELIVERY_FAILED` и оператор |
 
-У очередей есть ограничение concurrency, отдельные приоритеты, TTL задания относительно SLA и DLQ. Rate limiter внешней LLM учитывает provider quota; worker не создаёт неограниченный параллелизм. Retry разрешён только для временных ошибок. Circuit breaker защищает только внешнюю LLM и никогда не отключает classifier, policy или human routing. В текущем PoC circuit breaker не реализован: fallback действует на один запрос.
+Circuit breaker защищает только внешнюю LLM и никогда не отключает classifier, policy и human routing; в PoC его нет, fallback действует на один запрос.
 
-Нужны два transactional outbox. Первый атомарно фиксирует `routing decision + fulfillment job`; второй — `final decision + delivery/operator job`. Иначе процесс может упасть после decision commit, но до публикации задания, и тикет потеряется.
+**Два outbox обязательны.** Первый фиксирует `routing decision + fulfillment job`, второй — `final decision + delivery job`. Иначе процесс падает после commit решения, но до публикации задания, и тикет теряется.
 
-Delivery flow: `Decision Store + Outbox → Response Dispatcher → Support Channel`. `AUTO_RESPONSE` означает не «текст сформирован», а «создано надёжное задание на отправку». Dispatcher отправляет идемпотентно и отдельно пишет `DELIVERY_COMPLETED` или `DELIVERY_FAILED`; этих событий в PoC нет. Outbox даёт at-least-once, а дедупликация доставки — effectively-once. Гарантировать exactly-once через внешнюю границу нельзя.
+**`AUTO_RESPONSE` означает не «текст сформирован», а «создано надёжное задание на отправку».** Outbox даёт at-least-once, дедупликация доставки — effectively-once. Exactly-once через внешнюю границу недостижим.
 
-## Человек, обратная связь и деградация
+## Человек и деградация
 
-Оператор получает рискованные темы, low-confidence, `UNKNOWN`, отсутствие контекста и любой draft, не прошедший validator. Интерфейс фиксирует принятие draft, объём правки, фактическую категорию, причину отклонения, reopen и CSAT. После privacy-фильтра и временного split эти сигналы попадают в evaluation dataset; они ценнее усложнения prompt.
+Оператор получает рискованные темы, low-confidence, `UNKNOWN`, отсутствие контекста и любой draft, не прошедший validator. Интерфейс фиксирует принятие черновика, объём правки, фактическую категорию, причину отклонения, reopen и CSAT — эти сигналы ценнее усложнения prompt.
 
-Отказ policy всегда закрывает автоматизацию. Отказ retrieval или низкий score исключает генерацию. Ошибка LLM даёт локальный approved template; отсутствие безопасного template ведёт к человеку. Просроченная, review-статья либо PII в ответе блокируются validator. Поведение под нагрузкой и эксплуатационные пределы вынесены в [риски и эксплуатацию](risks-and-ops.md), здесь задана только структура очередей и восстановления.
+| Отказ | Поведение |
+|---|---|
+| Policy недоступна | автоматизация запрещена |
+| Retrieval пуст или score низкий | генерации нет |
+| LLM недоступна | approved template, иначе оператор |
+| Статья просрочена, не опубликована или в ответе PII | validator блокирует |
+| Audit недоступен | автоматического действия нет |
 
-## Deployment assumptions, SLO, RTO и RPO
+## Deployment, SLO, RTO и RPO
 
-Целевая поставка — один регион, несколько stateless routing-инстансов за балансировщиком, durable queue и ограниченный пул fulfillment workers. Проектные цели, а не измеренные свойства PoC: доступность синхронного routing `99,9%` в месяц и p95 `< 500 ms`; для generation отдельно — LLM-вызов завершается либо переходит в безопасный fallback за timeout `2 с`, а end-to-end p95 задаётся после production-замера. Проектный SLO first response, вытекающий из условия кейса: p95 от приёма обращения до автоответа или появления тикета в операторской очереди — не более 15 минут, и доля уложившихся в 15 минут не ниже 95%. Routing за миллисекунды сам по себе этого не гарантирует: между маршрутизацией и ответом лежат очередь и генерация. RPO для committed decision, outbox и audit — `0`: подтверждённое решение и аудит терять нельзя; незакоммиченный draft допустимо потерять и пересоздать либо передать оператору. RTO routing без generation — `15 мин` (проектное допущение); внешний LLM может оставаться отключённым после восстановления маршрутизации.
+Один регион, stateless routing-инстансы за балансировщиком, durable queue, ограниченный пул workers. Ниже — проектные цели, а не измеренные свойства PoC.
+
+| Параметр | Значение |
+|---|---|
+| Доступность синхронного routing | `99,9%` в месяц |
+| p95 routing | `< 500 мс` |
+| First response (SLA кейса) | p95 от приёма до автоответа или появления в очереди оператора `≤ 15 мин`, доля уложившихся `≥ 95%` |
+| LLM-вызов | завершение или безопасный fallback за `2 с` |
+| RPO | `0` для подтверждённого решения, outbox и аудита; незакоммиченный draft допустимо потерять |
+| RTO | `15 мин` для routing без generation; LLM может остаться отключённой |
+
+Routing за миллисекунды сам по себе SLA не гарантирует: между маршрутизацией и ответом лежат очередь и генерация.
 
 ## Почему не микросервисы
 
-Расчётные 33 RPS не оправдывают распределённость сами по себе. PoC — модульный монолит: меньше сетевых границ, проще воспроизводимость и безопасная сдача. В target classifier и generation можно разнести из-за разных SLA, стоимости, scaling profile и характера отказов, а не из-за текущей нагрузки. Policy и human routing должны оставаться доступными независимо от внешней LLM.
+Расчётные 33 RPS не оправдывают распределённость. PoC — модульный монолит: меньше сетевых границ и проще воспроизводимость. В целевой системе classifier и generation стоит разнести из-за разных SLA, стоимости и характера отказов, а не из-за нагрузки. Policy и human routing обязаны работать независимо от внешней LLM.
