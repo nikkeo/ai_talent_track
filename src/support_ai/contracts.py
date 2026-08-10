@@ -52,7 +52,13 @@ class Hit:
     title: str
     snippet: str
     score: float
+    # KB governance: решение об автоответе принимает validator, retrieval только отдаёт метаданные
     auto_allowed: bool
+    owner: str | None = None
+    expires_at: str | None = None
+    # диагностика каскадных ошибок: совпала ли тема документа с предсказанной
+    doc_topics: list[str] = field(default_factory=list)
+    topic_match: bool = False
 
 
 @dataclass
@@ -60,6 +66,8 @@ class RetrievalResult:
     hits: list[Hit]
     max_score: float
     index_version: str
+    query_topic: str | None = None
+    threshold_used: float = 0.0
 
 
 @dataclass
