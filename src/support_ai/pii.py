@@ -7,7 +7,7 @@ from .contracts import RedactedText
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("EMAIL", re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+", re.IGNORECASE)),
-    ("TOKEN", re.compile(r"(?<![\w-])(?:sk-[A-Za-z0-9_-]{16,}|[A-Fa-f0-9]{32,})(?![\w-])")),
+    ("TOKEN", re.compile(r"(?<![\w-])(?:sk-[A-Za-z0-9_-]{8,}|[A-Fa-f0-9]{32,})(?![\w-])")),
     ("PASSPORT", re.compile(r"(?<!\d)\d{2}\s+\d{2}\s+\d{6}(?!\d)")),
     ("CARD", re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")),
     (
