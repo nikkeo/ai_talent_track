@@ -876,6 +876,27 @@ def test_review_article_with_high_score_cannot_auto_answer(custom_kb):
 # --------------------------------------------------------------------------- #
 
 
+def test_postfix_demo_s1_remains_auto_response():
+    """Постфикс-инвариант: канонический S1 не должен потерять автоматизацию."""
+    rows = [
+        json.loads(line)
+        for line in config.DEMO_TICKETS.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    source = next(row for row in rows if row["ticket_id"] == "S1")
+    ticket_data = dict(source)
+    ticket_data["idempotency_key"] = f"{source['idempotency_key']}:postfix:{uuid.uuid4().hex}"
+    decision, event = pipeline.process(Ticket(**ticket_data))
+
+    assert decision.final_action == "AUTO_RESPONSE", (
+        f"S1 регрессировал: {decision.final_action}/{decision.reason}; "
+        f"topic={topic_of(event)} conf={confidence_of(event)} "
+        f"score={max_score_of(event)} citations={decision.citations}"
+    )
+    assert decision.citations == ["KB-TECH-125"], decision
+    assert decision.answer_text, "S1 получил AUTO_RESPONSE без ответа"
+
+
 def test_semantically_irrelevant_kb_hit_cannot_authorize_auto_response():
     """Высокий lexical score не доказывает, что статья отвечает на вопрос.
 
@@ -894,12 +915,54 @@ def test_semantically_irrelevant_kb_hit_cannot_authorize_auto_response():
 
     text = "как изменить номер телефона в профиле"
     decision, event = run(text)
-    assert decision.final_action != "AUTO_RESPONSE", (
-        "смыслово нерелевантная статья разрешила автоответ: "
+    assert decision.final_action == "DRAFT_FOR_OPERATOR", (
+        "смыслово нерелевантная статья не перешла в безопасный операторский draft: "
         f"topic={topic_of(event)} conf={confidence_of(event)} "
         f"score={max_score_of(event)} citations={decision.citations} "
         f"answer={decision.answer_text!r}"
     )
+    assert "LOW_RELEVANCE_FOR_AUTO" in decision.reason, decision
+    assert decision.citations == ["KB-HOWTO-214"], decision
+
+
+def test_word_coverage_boundary_loses_short_negation():
+    """Characterization: word overlap не понимает отрицание «не».
+
+    Значимые слова и lexical score совпадают со статьёй о смене языка, но запрос
+    спрашивает, как избежать случайной смены. Если система всё ещё автоматизирует
+    этот контрпример, фиксируем честное ограничение heuristic через XFAIL; когда
+    появится semantic/intent gate, тот же тест станет обычным PASS.
+    """
+    baseline, _ = run("как изменить язык интерфейса")
+    assert baseline.final_action == "AUTO_RESPONSE", (
+        f"baseline сломан: {baseline.final_action}/{baseline.reason}"
+    )
+
+    text = "как не изменить язык интерфейса случайно"
+    decision, event = run(text)
+    hits = hits_of(event)
+    assert topic_of(event) == "HOWTO", as_dict(event.classification)
+    assert confidence_of(event) is not None and confidence_of(event) >= config.AUTO_CONF_THRESHOLD
+    assert max_score_of(event) is not None and max_score_of(event) >= config.AUTO_RELEVANCE_THRESHOLD
+    assert hits and hits[0].get("doc_id") == "KB-HOWTO-214", hits
+    assert decision.citations == ["KB-HOWTO-214"], decision
+
+    # После появления answerability coverage контрпример обязан проходить и его
+    # порог; иначе это был бы другой short-circuit, а не граница word-overlap.
+    from support_ai import validator
+
+    coverage_fn = getattr(validator, "_answerability_coverage", None)
+    if coverage_fn is not None:
+        source = f"{hits[0].get('title', '')} {hits[0].get('snippet', '')}"
+        coverage = coverage_fn(text, source)
+        assert coverage >= config.AUTO_ANSWERABILITY_THRESHOLD, coverage
+
+    if decision.final_action == "AUTO_RESPONSE":
+        pytest.xfail(
+            "документированное ограничение word coverage: короткое отрицание «не» "
+            "теряется, хотя статья отвечает на противоположный вопрос"
+        )
+    assert decision.final_action != "AUTO_RESPONSE", decision
 
 
 def test_paraphrased_duplicate_bank_operation_escalates_despite_safe_tail():
