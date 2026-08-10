@@ -1,4 +1,4 @@
-"""Классификатор темы: TF-IDF + LogisticRegression. Владелец: Agent A, блок 1."""
+"""Классификатор темы: TF-IDF + LogisticRegression."""
 
 import json
 from threading import Lock
