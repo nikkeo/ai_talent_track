@@ -8,7 +8,7 @@ from support_ai.pipeline import process
 def test_six_demo_scenarios_end_to_end(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(config, "AUDIT_PATH", tmp_path / "audit.jsonl")
     expected = {
-        "S1": ("DRAFT_FOR_OPERATOR", "general"),
+        "S1": ("AUTO_RESPONSE", "automation"),
         "S2": ("ESCALATE", "financial-support"),
         "S3": ("DRAFT_FOR_OPERATOR", "general"),
         "S4": ("ESCALATE", "general"),

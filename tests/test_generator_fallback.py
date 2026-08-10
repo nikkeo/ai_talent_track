@@ -104,7 +104,7 @@ def test_mock_prompt_contains_only_redacted_ticket_text() -> None:
 def test_validator_rejects_missing_citation() -> None:
     draft = Draft("Перезапустите приложение.", [], "template", False, False)
 
-    result = validate(draft, _retrieval(), _policy())
+    result = validate(draft, _retrieval(), _policy(), _ticket())
 
     assert result.ok is False
     assert "MISSING_CITATION" in result.failed_checks
@@ -113,7 +113,7 @@ def test_validator_rejects_missing_citation() -> None:
 def test_validator_rejects_refund_promise() -> None:
     draft = Draft("Гарантируем, что вернём деньги.", ["KB-TECH-125"], "template", False, False)
 
-    result = validate(draft, _retrieval(), _policy())
+    result = validate(draft, _retrieval(), _policy(), _ticket())
 
     assert result.ok is False
     assert "FORBIDDEN_PROMISE" in result.failed_checks
@@ -123,7 +123,7 @@ def test_validator_rejects_article_in_review() -> None:
     hit = _hit(approval_status="review")
     draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
 
-    result = validate(draft, _retrieval(hit), _policy())
+    result = validate(draft, _retrieval(hit), _policy(), _ticket())
 
     assert result.ok is False
     assert "ARTICLE_NOT_PUBLISHED" in result.failed_checks
@@ -133,7 +133,7 @@ def test_validator_rejects_expired_article() -> None:
     hit = _hit(expires_at="2020-01-01")
     draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
 
-    result = validate(draft, _retrieval(hit), _policy())
+    result = validate(draft, _retrieval(hit), _policy(), _ticket())
 
     assert result.ok is False
     assert "ARTICLE_EXPIRED" in result.failed_checks
@@ -143,7 +143,7 @@ def test_validator_rejects_low_relevance_for_auto() -> None:
     hit = _hit(score=config.AUTO_RELEVANCE_THRESHOLD - 0.001)
     draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
 
-    result = validate(draft, _retrieval(hit), _policy())
+    result = validate(draft, _retrieval(hit), _policy(), _ticket())
 
     assert result.ok is False
     assert "LOW_RELEVANCE_FOR_AUTO" in result.failed_checks
@@ -153,6 +153,41 @@ def test_validator_accepts_auto_relevance_at_boundary() -> None:
     hit = _hit(score=config.AUTO_RELEVANCE_THRESHOLD)
     draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
 
-    result = validate(draft, _retrieval(hit), _policy())
+    result = validate(draft, _retrieval(hit), _policy(), _ticket())
 
     assert "LOW_RELEVANCE_FOR_AUTO" not in result.failed_checks
+
+
+def test_validator_rejects_low_answerability_for_auto() -> None:
+    hit = _hit(
+        title="Как изменить язык интерфейса",
+        snippet="Откройте профиль, выберите язык и сохраните изменения.",
+    )
+    draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
+
+    result = validate(
+        draft,
+        _retrieval(hit),
+        _policy(),
+        _ticket("как изменить номер телефона в профиле"),
+    )
+
+    assert result.ok is False
+    assert "LOW_ANSWERABILITY_FOR_AUTO" in result.failed_checks
+
+
+def test_validator_normalizes_word_forms_for_answerability() -> None:
+    hit = _hit(
+        title="Фотография в профиле",
+        snippet="Загрузите фотографию профиля и сохраните изменения.",
+    )
+    draft = Draft("Безопасный ответ.", [hit.doc_id], "template", False, False)
+
+    result = validate(
+        draft,
+        _retrieval(hit),
+        _policy(),
+        _ticket("фотографию профиля"),
+    )
+
+    assert "LOW_ANSWERABILITY_FOR_AUTO" not in result.failed_checks

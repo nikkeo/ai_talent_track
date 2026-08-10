@@ -972,7 +972,7 @@ def test_entire_kb_catalog_satisfies_governance_invariants():
     from dataclasses import replace
 
     from support_ai import retrieval, validator
-    from support_ai.contracts import Draft, PolicyDecision, RetrievalResult
+    from support_ai.contracts import Draft, PolicyDecision, RetrievalResult, SanitizedTicket
 
     paths = sorted(config.KB_DIR.glob("*.md"))
     catalog = kb_catalog()
@@ -1077,7 +1077,14 @@ def test_entire_kb_catalog_satisfies_governance_invariants():
             llm_used=False,
             degraded=False,
         )
-        baseline = validator.validate(draft, baseline_retrieval, auto_policy)
+        ticket = SanitizedTicket(
+            ticket_id=f"governance-{doc_id}",
+            idempotency_key=f"governance:{doc_id}",
+            channel="web",
+            language="ru",
+            redacted_text=meta["title"],
+        )
+        baseline = validator.validate(draft, baseline_retrieval, auto_policy, ticket)
         assert baseline.ok, f"{doc_id}: разрешающий baseline не прошёл: {baseline.failed_checks}"
 
         negative_hit = (
@@ -1086,7 +1093,7 @@ def test_entire_kb_catalog_satisfies_governance_invariants():
             else replace(permissive_hit, expires_at=actual_hit.expires_at)
         )
         negative_retrieval = replace(baseline_retrieval, hits=[negative_hit])
-        negative = validator.validate(draft, negative_retrieval, auto_policy)
+        negative = validator.validate(draft, negative_retrieval, auto_policy, ticket)
         assert not negative.ok and failed_check in negative.failed_checks, (
             f"{doc_id}: validator не закрыл {failed_check}: {negative.failed_checks}"
         )

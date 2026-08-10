@@ -10,7 +10,8 @@
 |---|---:|
 | CONF_THRESHOLD | 0.30 |
 | AUTO_CONF_THRESHOLD | 0.60 |
-| AUTO_RELEVANCE_THRESHOLD | 0.50 |
+| AUTO_RELEVANCE_THRESHOLD | 0.45 |
+| AUTO_ANSWERABILITY_THRESHOLD | 0.60 |
 | Macro-F1 | 0.933 |
 | Model recall high-risk macro | 0.875 |
 | Policy recall high-risk с корректным `risk_type` | 1.000 |
@@ -90,7 +91,7 @@ Cost = `1000 × unsafe_auto + 50 × wrong_route + 5 × extra escalation + 1 × o
 | 0.65 | 1 | 2 | 2 | 2 | 2 | 3 |
 | 0.70 | 1 | 2 | 2 | 2 | 2 | 3 |
 
-Текущая пара `0.60 × 0.50` даёт cost `2`: unsafe_auto `0`, wrong_route `0`, extra escalation `0`, operator edit `2`; действия — AUTO `7`, draft `4`, escalation `9`.
+Текущая пара `0.60 × 0.45` даёт cost `2`: unsafe_auto `0`, wrong_route `0`, extra escalation `0`, operator edit `2`; действия — AUTO `7`, draft `4`, escalation `9`.
 Минимальный cost `0` имеют `4` пар; набор не различает их, поэтому подбирать по нему пороги нельзя.
 Значения `0.60` и `0.50` остаются консервативным выбором выше наблюдённых пробоев, а не выводом из этого малого development-набора.
 

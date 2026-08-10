@@ -4,7 +4,7 @@ from datetime import date
 import re
 
 from . import config
-from .contracts import Draft, PolicyDecision, RetrievalResult, Validation
+from .contracts import Draft, PolicyDecision, RetrievalResult, SanitizedTicket, Validation
 
 
 _PLACEHOLDER_RE = re.compile(r"<[A-Z][A-Z0-9_]*_\d+>")
@@ -16,13 +16,56 @@ _PROMISE_RE = re.compile(
     r"в\s+течение\s+\d+\s*(?:час(?:а|ов)?|дн(?:я|ей)))\b",
     re.IGNORECASE,
 )
+_WORD_RE = re.compile(r"[a-zа-яё]+", re.IGNORECASE)
+_RU_SUFFIXES = tuple(sorted(
+    (
+        "иями", "ами", "ями", "ого", "ему", "ому", "ыми", "ими",
+        "аться", "яться", "иться", "ется", "ится", "ются", "утся",
+        "ить", "ать", "ять", "еть", "ого", "его", "ому", "ему",
+        "ий", "ый", "ой", "ая", "яя", "ое", "ее", "ые", "ие",
+        "ую", "юю", "ов", "ев", "ам", "ям", "ах", "ях", "ом",
+        "ем", "ия", "ию", "ью", "а", "я", "ы", "и", "у", "ю",
+        "е", "о", "ь", "ти",
+    ),
+    key=len,
+    reverse=True,
+))
 
 
-def validate(draft: Draft, retrieval: RetrievalResult, policy: PolicyDecision) -> Validation:
+def _normalized_terms(text: str) -> set[str]:
+    """Грубые нормализованные формы значимых слов, без внешней морфологии."""
+    terms: set[str] = set()
+    for raw in _WORD_RE.findall(text.casefold().replace("ё", "е")):
+        if len(raw) < 4:
+            continue
+        term = raw
+        for suffix in _RU_SUFFIXES:
+            if term.endswith(suffix) and len(term) - len(suffix) >= 4:
+                term = term[:-len(suffix)]
+                break
+        terms.add(term)
+    return terms
+
+
+def _answerability_coverage(query: str, source: str) -> float:
+    query_terms = _normalized_terms(query)
+    if not query_terms:
+        return 0.0
+    source_terms = _normalized_terms(source)
+    return len(query_terms & source_terms) / len(query_terms)
+
+
+def validate(
+    draft: Draft,
+    retrieval: RetrievalResult,
+    policy: PolicyDecision,
+    ticket: SanitizedTicket,
+) -> Validation:
     """Право на автоответ проверяется здесь и только здесь.
 
     Требуется одновременно: policy.route == AUTO_CANDIDATE, citation на реально
-    найденный документ, retrieval.max_score не ниже порога автоответа,
+    найденный документ, retrieval.max_score не ниже порога автоответа и
+    достаточное покрытие значимых слов запроса процитированным источником,
     hit.auto_allowed, approval_status == "published",
     заданный owner, заданный и не истёкший expires_at, отсутствие PII и
     плейсхолдеров в тексте, отсутствие запрещённых обещаний, длина не выше
@@ -52,6 +95,12 @@ def validate(draft: Draft, retrieval: RetrievalResult, policy: PolicyDecision) -
             failed.append("CITATION_NOT_RETRIEVED")
         else:
             cited_hits.append(hit)
+
+    if policy.route == "AUTO_CANDIDATE":
+        cited_source = " ".join(f"{hit.title} {hit.snippet}" for hit in cited_hits)
+        coverage = _answerability_coverage(ticket.redacted_text, cited_source)
+        if coverage < config.AUTO_ANSWERABILITY_THRESHOLD:
+            failed.append("LOW_ANSWERABILITY_FOR_AUTO")
 
     for hit in cited_hits:
         if not hit.auto_allowed:

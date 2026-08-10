@@ -320,6 +320,7 @@ def main() -> int:
         f"| CONF_THRESHOLD | {config.CONF_THRESHOLD:.2f} |",
         f"| AUTO_CONF_THRESHOLD | {config.AUTO_CONF_THRESHOLD:.2f} |",
         f"| AUTO_RELEVANCE_THRESHOLD | {config.AUTO_RELEVANCE_THRESHOLD:.2f} |",
+        f"| AUTO_ANSWERABILITY_THRESHOLD | {config.AUTO_ANSWERABILITY_THRESHOLD:.2f} |",
         f"| Macro-F1 | {macro_f1:.3f} |",
         f"| Model recall high-risk macro | {float(current['model_risk_recall']):.3f} |",
         f"| Policy recall high-risk с корректным `risk_type` | {float(current['policy_risk_recall']):.3f} |",

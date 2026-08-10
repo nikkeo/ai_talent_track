@@ -246,7 +246,9 @@ def fulfill(
     except Exception:
         draft = Draft(None, [], "none", False, True, "LLM_UNAVAILABLE")
 
-    validation = validator.validate(draft, retrieval_result, outcome.policy)
+    validation = validator.validate(
+        draft, retrieval_result, outcome.policy, outcome.sanitized
+    )
     async_ms = (perf_counter() - started) * 1_000
     if draft.degraded:
         decision = _decision(
